@@ -23,6 +23,7 @@ from losses import DistillationLoss
 from samplers import RASampler
 import models
 import utils
+import random
 
 
 def get_args_parser():
@@ -182,7 +183,7 @@ def main(args):
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    # random.seed(seed)
+    random.seed(seed)
 
     cudnn.benchmark = True
 
