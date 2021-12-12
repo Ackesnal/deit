@@ -57,7 +57,7 @@ class DistilledVisionTransformer(VisionTransformer):
         else:
             # during inference, return the average of both classifier predictions
             return (x + x_dist) / 2
-
+    
 class ShuffleVisionTransformer(VisionTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -69,6 +69,14 @@ class ShuffleVisionTransformer(VisionTransformer):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim * 2))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim * 2))
         
+        dpr = [x.item() for x in torch.linspace(0, kwargs["drop_path_rate"], kwargs["depth"])]  # stochastic depth decay rule
+        self.blocks = nn.Sequential(*[
+            Block(
+                dim=kwargs["embed_dim"], num_heads=kwargs["num_heads"], mlp_ratio=kwargs["mlp_ratio"], qkv_bias=kwargs["qkv_bias"], drop=kwargs["drop_rate"],
+                attn_drop=kwargs["attn_drop_rate"], drop_path=dpr[i], norm_layer=kwargs["norm_layer"], act_layer=kwargs["act_layer"])
+            for i in range(kwargs["depth"])])
+        
+        self.embed_norm = nn.LayerNorm(embed_dim * 2)
         self.norm = nn.LayerNorm(embed_dim * 2)
         self.head = nn.Linear(embed_dim * 2, self.num_classes) if self.num_classes > 0 else nn.Identity()
 
@@ -82,12 +90,12 @@ class ShuffleVisionTransformer(VisionTransformer):
         x = torch.cat((cls_tokens, x), dim=1)
 
         x = x + self.pos_embed
+        x = self.embed_norm(x)
         x = self.pos_drop(x)
         
         for blk in self.blocks:
-            x_1 = blk(x[:,:,:x.shape[2]//2])
-            x_2 = x[:,:,x.shape[2]//2:]
-            x = torch.cat((x_1, x_2 + x_1), dim=2)
+            res = blk(x[:,:,:x.shape[2]//2])
+            x = torch.cat((res, x[:,:,x.shape[2]//2:] - x[:,:,:x.shape[2]//2] + res), dim=2)
             x = x.reshape(B, x.shape[1], 2, x.shape[2]//2).transpose(-1, -2).reshape(B, x.shape[1], x.shape[2])
 
         x = self.norm(x)
