@@ -87,7 +87,7 @@ class ShuffleVisionTransformer(VisionTransformer):
         for blk in self.blocks:
             x_1 = blk(x[:,:,:x.shape[2]//2])
             x_2 = x[:,:,x.shape[2]//2:]
-            x = torch.cat((x_1, x_2), dim=2)
+            x = torch.cat((x_1, x_2 + x_1), dim=2)
             x = x.reshape(B, x.shape[1], 2, x.shape[2]//2).transpose(-1, -2).reshape(B, x.shape[1], x.shape[2])
 
         x = self.norm(x)
