@@ -91,7 +91,7 @@ class ShuffleVisionTransformer(VisionTransformer):
             x = self.norm(torch.cat((res, x[:,:,x.shape[2]//2:]), dim=2))
             x = x.reshape(B, x.shape[1], 2, x.shape[2]//2).transpose(-1, -2).reshape(B, x.shape[1], x.shape[2])
 
-        x = self.norm(x)
+        # x = self.norm(x)
         return x[:, 0]
 
     def forward(self, x):
