@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from functools import partial
+import torch.utils.checkpoint as checkpoint
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models.registry import register_model
@@ -87,11 +88,11 @@ class ShuffleVisionTransformer(VisionTransformer):
         x = self.pos_drop(x)
         
         for blk in self.blocks:
-            res = blk(x[:,:,:x.shape[2]//2])
+            res = checkpoint.checkpoint(blk, x[:,:,:x.shape[2]//2])
             x = self.norm(torch.cat((res, x[:,:,x.shape[2]//2:]), dim=2))
             x = x.reshape(B, x.shape[1], 2, x.shape[2]//2).transpose(-1, -2).reshape(B, x.shape[1], x.shape[2])
 
-        # x = self.norm(x)
+        x = self.norm(x)
         return x[:, 0]
 
     def forward(self, x):
