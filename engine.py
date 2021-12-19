@@ -92,7 +92,7 @@ def evaluate(data_loader, model, device):
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
         
-        del samples, targets
+        del images, target
         torch.cuda.empty_cache()
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
