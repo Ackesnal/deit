@@ -354,7 +354,9 @@ def main(args):
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            # lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            for _ in range(int(checkpoint['epoch'])+1)：
+                lr_scheduler.step(epoch)
             args.start_epoch = checkpoint['epoch'] + 1
             if args.model_ema:
                 utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
