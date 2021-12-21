@@ -10,6 +10,6 @@
 #SBATCH -e modified_new5_shuffle_deit_tiny_err.txt
 
 for i in {1..100}; do
-    srun python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_tiny_shuffle_patch16_224 --batch-size 512 --data-path ../../uqxxu16/data/imagenet/ --output_dir ./output/modified3_new5_shuffle_deit_tiny --resume ./output/modified3_new4_shuffle_deit_tiny/checkpoint.pth --min-lr 2e-5
+    srun python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_tiny_shuffle_patch16_224 --batch-size 512 --data-path ../../uqxxu16/data/imagenet/ --output_dir ./output/modified3_new5_shuffle_deit_tiny --resume ./output/modified3_new4_shuffle_deit_tiny/checkpoint.pth --min-lr 2e-5 --drop-path 0.01
     wait
 done
