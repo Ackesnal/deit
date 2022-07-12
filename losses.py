@@ -5,6 +5,7 @@ Implements the knowledge distillation loss
 """
 import torch
 from torch.nn import functional as F
+from timm.loss import SoftTargetCrossEntropy, LabelSmoothingCrossEntropy
 
 
 class DistillationLoss(torch.nn.Module):
@@ -67,4 +68,37 @@ class DistillationLoss(torch.nn.Module):
             distillation_loss = F.cross_entropy(outputs_kd, teacher_outputs.argmax(dim=1))
 
         loss = base_loss * (1 - self.alpha) + distillation_loss * self.alpha
+        return loss
+
+
+class DenseLoss(torch.nn.Module):
+    """
+    This module wraps a standard criterion and adds an extra knowledge distillation loss by
+    taking a teacher model prediction and using it as additional supervision.
+    """
+    def __init__(self, base_criterion: torch.nn.Module):
+        super().__init__()
+        if isinstance(base_criterion, SoftTargetCrossEntropy):
+            self.base_criterion = [SoftTargetCrossEntropy() for i in range(12)]
+        elif isinstance(base_criterion, LabelSmoothingCrossEntropy):
+            self.base_criterion = [LabelSmoothingCrossEntropy(smoothing=args.smoothing) for i in range(12)]
+        else:
+            self.base_criterion = [torch.nn.CrossEntropyLoss() for i in range(12)]
+            
+
+    def forward(self, inputs, outputs, labels):
+        """
+        Args:
+            inputs: The original inputs that are feed to the teacher model
+            outputs: the outputs of the model to be trained. It is expected to be
+                either a Tensor, or a Tuple[Tensor, Tensor], with the original output
+                in the first position and the distillation predictions as the second output
+            labels: the labels for the base criterion
+        """
+        
+        loss = 0
+        for i in range(len(outputs)):
+            loss = loss + self.base_criterion[i](outputs[i], labels)
+        loss = loss / len(outputs)
+        
         return loss

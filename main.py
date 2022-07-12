@@ -19,11 +19,10 @@ from timm.utils import NativeScaler, get_state_dict, ModelEma
 
 from datasets import build_dataset
 from engine import train_one_epoch, evaluate
-from losses import DistillationLoss
+from losses import DistillationLoss, DenseLoss
 from samplers import RASampler
 import models
 import utils
-import random
 
 
 def get_args_parser():
@@ -183,7 +182,7 @@ def main(args):
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    random.seed(seed)
+    # random.seed(seed)
 
     cudnn.benchmark = True
 
@@ -224,7 +223,7 @@ def main(args):
 
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
-        batch_size=int(0.5*args.batch_size),
+        batch_size=int(1.5 * args.batch_size),
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False
@@ -302,7 +301,7 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
-    linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 2048.0
+    linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
     optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScaler()
@@ -340,9 +339,10 @@ def main(args):
 
     # wrap the criterion in our custom DistillationLoss, which
     # just dispatches to the original criterion if args.distillation_type is 'none'
-    criterion = DistillationLoss(
-        criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
-    )
+    # criterion = DistillationLoss(
+    #     criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
+    # )
+    criterion = DenseLoss(criterion)
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -354,8 +354,7 @@ def main(args):
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
-            # lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-            lr_scheduler.step(checkpoint['epoch'])
+            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
             if args.model_ema:
                 utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
@@ -408,7 +407,6 @@ def main(args):
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
-        torch.cuda.empty_cache()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
