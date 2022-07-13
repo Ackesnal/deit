@@ -79,11 +79,11 @@ class DenseLoss(torch.nn.Module):
     def __init__(self, base_criterion: torch.nn.Module):
         super().__init__()
         if isinstance(base_criterion, SoftTargetCrossEntropy):
-            self.base_criterion = [SoftTargetCrossEntropy() for i in range(12)]
+            self.base_criterion = torch.nn.ModuleList([SoftTargetCrossEntropy() for i in range(12)])
         elif isinstance(base_criterion, LabelSmoothingCrossEntropy):
-            self.base_criterion = [LabelSmoothingCrossEntropy(smoothing=args.smoothing) for i in range(12)]
+            self.base_criterion = torch.nn.ModuleList([LabelSmoothingCrossEntropy(smoothing=args.smoothing) for i in range(12)])
         else:
-            self.base_criterion = [torch.nn.CrossEntropyLoss() for i in range(12)]
+            self.base_criterion = torch.nn.ModuleList([torch.nn.CrossEntropyLoss() for i in range(12)])
             
 
     def forward(self, inputs, outputs, labels):
@@ -98,7 +98,6 @@ class DenseLoss(torch.nn.Module):
         
         loss = 0
         for i in range(len(outputs)):
-            loss = loss + self.base_criterion[i](outputs[i], labels)
-        loss = loss / len(outputs)
+            loss = loss + self.base_criterion[i](outputs[i], labels) / len(outputs)
         
         return loss

@@ -64,7 +64,11 @@ class ShuffleVisionTransformer(VisionTransformer):
         super().__init__(*args, **kwargs)
         # Classifier Head
         self.head = None
-        self.heads = nn.Sequential(*[nn.Linear(self.embed_dim, kwargs["num_classes"]) if kwargs["num_classes"] > 0 else nn.Identity() for i in range(kwargs["depth"])])
+        self.heads = nn.ModuleList([nn.Linear(self.embed_dim, kwargs["num_classes"]) if kwargs["num_classes"] > 0 else nn.Identity() for i in range(kwargs["depth"])])
+        self.norm = None
+        self.norms = nn.ModuleList([self.norm_layer(self.embed_dim) if not self.use_fc_norm else nn.Identity() for i in range(kwargs["depth"])])
+        self.fc_norm = None
+        self.fc_norms = nn.ModuleList([self.norm_layer(self.embed_dim) if self.use_fc_norm else nn.Identity() for i in range(kwargs["depth"])])
         
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -75,16 +79,16 @@ class ShuffleVisionTransformer(VisionTransformer):
             if self.training:
                 out_cls.append(x[:,0])
         if self.training:
-            return [self.norm(cls) for cls in out_cls]
+            return [self.norms[i](out_cls[i]) for i in range(len(out_cls))]
         else:
-            return self.norm(x[:,0])
+            return self.norms[-1](x[:,0])
 
     def forward_head(self, x, pre_logits: bool = False):
         if self.training:
-            x = [self.fc_norm(x[i]) for i in range(len(x))]
+            x = [self.fc_norms[i](x[i]) for i in range(len(x))]
             return x if pre_logits else [self.heads[i](x[i]) for i in range(len(x))]
         else:
-            x = self.fc_norm(x)
+            x = self.fc_norms[-1](x) 
             return x if pre_logits else self.heads[-1](x)
 
     def forward(self, x):
