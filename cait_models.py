@@ -11,12 +11,11 @@ from timm.models.layers import trunc_normal_, DropPath
 
 
 __all__ = [
-    'cait_M48', 'cait_M36', 'cait_M4',
+    'cait_M48', 'cait_M36',
     'cait_S36', 'cait_S24','cait_S24_224',
     'cait_XS24','cait_XXS24','cait_XXS24_224',
     'cait_XXS36','cait_XXS36_224'
 ]
-
 
 class Class_Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
@@ -213,7 +212,7 @@ class cait_models(nn.Module):
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)

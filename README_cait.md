@@ -1,7 +1,13 @@
 
-# CaiT: Going deeper with Image Transformers
+# CaiT: Going deeper with Image Transformers 
 
-This repository contains PyTorch evaluation code, training code and pretrained models for DeiT (Data-Efficient Image Transformers) and CaiT (Going deeper with Image Transformers). All models are trained during 400 epochs. 
+This repository contains PyTorch evaluation code, training code and pretrained models for:
+* [DeiT](README_deit.md) (Data-Efficient Image Transformers), ICML 2021
+* CaiT (Going deeper with Image Transformers), ICCV 2021 (Oral)
+* [ResMLP](README_resmlp.md) (ResMLP: Feedforward networks for image classification with data-efficient training) 
+* [PatchConvnet](README_patchconvnet.md) (Augmenting Convolutional networks with attention-based aggregation)
+* [3Things](README_3things.md) (Three things everyone should know about Vision Transformers)
+* [DeiT III](README_revenge.md) (DeiT III: Revenge of the ViT)
 
 CaiT obtain competitive tradeoffs in terms of flops / precision:
 
@@ -14,11 +20,13 @@ For details see [Going deeper with Image Transformers](https://arxiv.org/abs/210
 If you use this code for a paper please cite:
 
 ```
-@article{touvron2021cait,
-  title={Going deeper with Image Transformers},
-  author={Hugo Touvron and Matthieu Cord and Alexandre Sablayrolles and Gabriel Synnaeve and Herv\'e J\'egou},
-  journal={arXiv preprint arXiv:2103.17239},
-  year={2021}
+@InProceedings{Touvron_2021_ICCV,
+    author    = {Touvron, Hugo and Cord, Matthieu and Sablayrolles, Alexandre and Synnaeve, Gabriel and J\'egou, Herv\'e},
+    title     = {Going Deeper With Image Transformers},
+    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+    month     = {October},
+    year      = {2021},
+    pages     = {32-42}
 }
 ```
 
@@ -57,6 +65,10 @@ def get_test_transforms(input_size):
 
 Remark: for CaiT M48 it is best to evaluate with FP32 precision
 
+### Other: Unofficial Implementations
+
+ - [TensorFlow](https://github.com/sayakpaul/cait-tf) by [Sayak Paul](https://github.com/sayakpaul)
+ 
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 

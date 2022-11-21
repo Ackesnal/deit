@@ -10,7 +10,7 @@ from timm.models.layers import trunc_normal_,  DropPath
 
 
 __all__ = [
-    'resMLP_12', 'resMLP_24', 'resMLP_36', 'resmlpB_24'
+    'resmlp_12', 'resmlp_24', 'resmlp_36', 'resmlpB_24'
 ]
 
 class Affine(nn.Module):
@@ -76,7 +76,7 @@ class resmlp_models(nn.Module):
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
