@@ -84,34 +84,25 @@ class GraphPropagationBlock(Block):
         
         return x_kept, prop_matrix
         
-    def forward(self, x: torch.Tensor, num_prop=10) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, num_prop=13) -> torch.Tensor:
         # Note: this is copied from timm.models.vision_transformer.Block with modifications.
-        attn_size = self._tome_info["size"] if self._tome_info["prop_attn"] else None
-        x_attn, attn = self.attn(self.norm1(x), attn_size)
-        x = x + self._drop_path1(x_attn)
-        x = x + self._drop_path2(self.mlp(self.norm2(x)))
         
-        B, N, C= x.shape
-        token_rank = attn.mean(1).reshape(B, N*N)[:, 0::N+1]
-        token_rank = torch.argsort(token_rank, dim=1, descending=True) # B, N-1
-        index_kept, _ = torch.sort(token_rank[:, :-num_prop]) # B, N-K
-        index_elim, _ = torch.sort(token_rank[:, -num_prop:]) # B, K
-        x, prop_matrix = self.propagation(x, attn, index_kept, index_elim)
+        attn_size = self._tome_info["size"] if self._tome_info["prop_attn"] else None
         
         if self._tome_info["size"] is None:
+            x_attn = self.attn(self.norm1(x), attn_size)
+            B, N, C = x.shape
             self._tome_info["size"] = torch.ones([B, N], device=x.device, dtype=x.dtype)
+        else:
+            x_attn, prop_matrix, index_kept, index_elim = self.attn(self.norm1(x), attn_size)
+            B, N, C = x.shape
+            size_kept = self._tome_info["size"].reshape(-1).index_select(dim=0, index=index_kept).reshape(B, index_kept.shape[0]//B)
+            size_elim = self._tome_info["size"].reshape(-1).index_select(dim=0, index=index_elim).reshape(B, index_elim.shape[0]//B, 1)
+            self._tome_info["size"] = size_kept + (prop_matrix @ size_elim).squeeze()
+            x = x.reshape(-1, C).index_select(dim=0, index=index_kept).reshape(B, -1, C)
         
-        num_kept = index_kept.shape[1]
-        index_B = torch.arange(B, dtype=index_kept.dtype, device=index_kept.device).reshape(B, 1).expand(B, num_kept).reshape(-1)*N
-        index_kept = index_kept.reshape(B*num_kept) + index_B
-        num_elim = index_elim.shape[1]
-        index_B = torch.arange(B, dtype=index_elim.dtype, device=index_elim.device).reshape(B, 1).expand(B, num_elim).reshape(-1)*N
-        index_elim = index_elim.reshape(B*num_elim) + index_B
-        
-        size_kept = self._tome_info["size"].reshape(-1).index_select(dim=0, index=index_kept).reshape(B, num_kept)
-        size_elim = self._tome_info["size"].reshape(-1).index_select(dim=0, index=index_elim).reshape(B, num_elim, 1)
-        
-        self._tome_info["size"] = size_kept + (prop_matrix @ size_elim).squeeze()
+        x = x + self._drop_path1(x_attn)
+        x = x + self._drop_path2(self.mlp(self.norm2(x)))
         
         return x
 
@@ -124,10 +115,11 @@ class ModifiedAttention(Attention):
     """
 
     def forward(
-        self, x: torch.Tensor, size: torch.Tensor = None
+        self, x: torch.Tensor, size: torch.Tensor = None, num_prop = 10
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Note: this is copied from timm.models.vision_transformer.Attention with modifications.
         B, N, C = x.shape
+        H = self.num_heads
         qkv = (
             self.qkv(x)
             .reshape(B, N, 3, self.num_heads, C // self.num_heads)
@@ -143,28 +135,61 @@ class ModifiedAttention(Attention):
 
         # Apply proportional attention
         if size is not None:
-            attn = attn + size.log().reshape(B, 1, 1, N) # torch.nn.functional.normalize(size.reshape(B, 1, 1, N), p=1, dim=-2).expand(B,1,N,N) # 
-
-        attn = attn.softmax(dim=-1) 
-        """
-        attn = self.attn_drop(attn)
-        
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        """
-        attn_sorted, _ = torch.sort(attn.reshape(B, self.num_heads, N*N), descending=True, dim=-1) # B, H, N*N
-        attn_threshold = attn_sorted[:, :, int(N*N*0.7)] # B, H
-        attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).repeat(1, 1, N, N) # B, H, N, N
-        pad = torch.zeros((B, self.num_heads, N, N), dtype = attn.dtype, device = attn.device)
-        new_attn = torch.where(attn >= attn_threshold, attn, pad)
-        
-        new_attn = self.attn_drop(new_attn)
-        x = (new_attn @ v).transpose(1, 2).reshape(B, N, C)
-        
-        x = self.proj(x)
-        x = self.proj_drop(x)
-
-        # Return k as well here
-        return x, attn
+            attn = attn #+ size.log().reshape(B, 1, 1, N) # torch.nn.functional.normalize(size.reshape(B, 1, 1, N), p=1, dim=-1).expand(B,1,N,N) # 
+            attn = attn.softmax(dim=-1)
+            # select tokens
+            token_rank = attn.mean(1).reshape(B, N*N)[:, 0::N+1] # B, N
+            token_rank = torch.argsort(token_rank[:, 1:], dim=1, descending=True) # B, N-1
+            index_kept, _ = torch.sort(token_rank[:, :-num_prop]) # B, N-K-1
+            index_elim, _ = torch.sort(token_rank[:, -num_prop:]) # B, K
+            
+            index_cls = torch.zeros([index_kept.shape[0], 1], device=index_kept.device, dtype=index_kept.dtype)
+            index_kept = torch.cat((index_cls, index_kept + 1), dim=1) # B, N-K
+            index_elim = index_elim + 1 # B, K
+            
+            num_kept = index_kept.shape[1]
+            num_elim = index_elim.shape[1]
+            
+            index_B = torch.arange(B, dtype=index_kept.dtype, device=index_kept.device).reshape(B, 1).expand(B, num_kept).reshape(-1)*N
+            index_kept = index_kept.reshape(B*num_kept) + index_B # B*(N-K)
+            index_B = torch.arange(B, dtype=index_elim.dtype, device=index_elim.device).reshape(B, 1).expand(B, num_elim).reshape(-1)*N
+            index_elim = index_elim.reshape(B*num_elim) + index_B # B*K
+            
+            # select attention weights
+            attn_kept = attn.transpose(0,1).reshape(H, B*N, N) # H,B*N,N
+            attn_kept = attn_kept.index_select(dim=1, index=index_kept) # H,B*(N-K),N
+            attn_kept = attn_kept.reshape(H, B, num_kept, N) # H,B,(N-K),N
+            attn_kept = attn_kept.transpose(0, 1) # B, H, N-K, N 
+            
+            # filter attention weights
+            attn_sorted, _ = torch.sort(attn_kept.reshape(B, self.num_heads, num_kept*N), descending=True, dim=-1) # B, H, N*N
+            attn_threshold = attn_sorted[:, :, int(num_kept*N*0.9)] # B, H
+            attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, num_kept, N) # B, H, N, N
+            pad = torch.zeros((B, self.num_heads, num_kept, N), dtype = attn.dtype, device = attn.device)
+            attn_kept = torch.where(attn_kept >= attn_threshold, attn_kept, pad) # B, H, N, N
+            
+            # update feature
+            attn_kept = self.attn_drop(attn_kept)
+            x = (attn_kept @ v).transpose(1, 2).reshape(B, num_kept, C)
+            
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            
+            # update size
+            attn_elim2kept = attn_kept.permute(1, 0, 3, 2).reshape(H, B*N, num_kept) # H,B*N,(N-K)
+            attn_elim2kept = attn_elim2kept.index_select(dim=1, index=index_elim) # H,B*K,(N-K)
+            attn_elim2kept = attn_elim2kept.reshape(H, B, num_elim, num_kept).permute(1,0,3,2) # B,H,(N-K),K
+            prop_matrix = torch.nn.functional.normalize(attn_elim2kept.mean(1), dim=-2, p=1) # B, N-K, K
+            
+            # Return 
+            return x, prop_matrix, index_kept, index_elim
+        else:
+            attn = attn.softmax(dim=-1) # B, H, N, N
+            attn = self.attn_drop(attn)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x
 
 
 def make_tome_class(transformer_class):
