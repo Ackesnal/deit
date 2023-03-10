@@ -25,10 +25,19 @@ from augment import new_data_aug_generator
 
 import models
 import models_v2
+import models_v3
 
 import utils
+from torchprofile import profile_macs
 
+def get_macs(model, x=None):
+    model.eval()
+    if x is None:
+        x = torch.rand(1, 3, 224, 224).cuda()
+    macs = profile_macs(model, x)
+    return macs
 
+    
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=64, type=int)
@@ -181,6 +190,14 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+    
+    parser.add_argument('--selection', default='DiagAttn')
+    parser.add_argument('--propagation', default='ThresholdGraph')
+    parser.add_argument('--reduction_num', type=int, default=0)         
+    
+    parser.add_argument('--test_speed', action='store_true')
+    parser.add_argument('--only_test_speed', action='store_true')     
+    
     return parser
 
 
@@ -263,7 +280,10 @@ def main(args):
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
-        img_size=args.input_size
+        img_size=args.input_size,
+        selection=args.selection,
+        propagation=args.propagation,
+        reduction_num=args.reduction_num
     )
 
                     
@@ -409,14 +429,28 @@ def main(args):
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
-
+    
+    if args.test_speed:
+        # test model throughput for three times to ensure accuracy
+        """inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')"""
+        MACs = get_macs(model)
+        print('GMACs:', MACs * 1e-9)
+    if args.only_test_speed:
+        return
+    
+    
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
-
+        
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
