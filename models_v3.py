@@ -11,7 +11,7 @@ import math
 
 
 def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                      multihead=True, threshold=True, sparsity=0.25, alpha=0.1):
+                      multihead=True, threshold=True, sparsity=0.2, alpha=0.1):
     """
     Perform graph propagation to combine the eliminated tokens into kept tokens
     x_kept -> [B, N-K, C] : The input feature map
@@ -57,6 +57,15 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).permute(2, 0, 1, 3) # H, B, (N-K), C//H
         x_prop = x_prop.permute(1, 2, 0, 3).reshape(B, num_kept, C) # B, (N-K), C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
+        """
+        # sparse matrixm multiplication
+        weight = weight.reshape(H*B, num_kept, num_elim)
+        weight = weight.to_sparse()
+        x_elim = x_elim.reshape(B, num_elim, H, C//H).permute(2, 0, 1, 3).reshape(H*B, num_elim, C//H)
+        x_prop = torch.bmm(weight, x_elim) # H, B, (N-K), C//H
+        x_prop = x_prop.reshape(H, B, num_kept, C//H).permute(1, 2, 0, 3).reshape(B, num_kept, C) # B, (N-K), C
+        x_kept = x_kept + alpha * x_prop # B, (N-K), C
+        """
     else:
         weight = weight.mean(0) # B, (N-K), K
         x_prop = weight @ x_elim # B, N-K, C
@@ -126,10 +135,10 @@ def select(weight, standard, descending=True):
         B, H, N, _ = weight.shape
     
     if standard == "PageRank":
-        token_rank = self.pagerank(weight) # B, N-1
+        token_rank = pagerank(weight) # B, N-1
             
     elif standard == "ThresholdPageRank":
-        token_rank = self.pagerank(weight, threshold=True) # B, N-1
+        token_rank = pagerank(weight, threshold=0.3) # B, N-1
             
     elif standard == "CLSAttn":
         token_rank = weight.mean(1)[:,0,1:] # B, N-1
@@ -154,6 +163,63 @@ def select(weight, standard, descending=True):
     token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
     return token_rank # B, N-1
 
+
+def pagerank(weight, max_iter = 20, d = 0.95, min_dist = 1e-3, threshold = False):
+    assert weight.shape[-1] == weight.shape[-2] # ensure weight is an N*N matrix
+    B = weight.shape[0]
+    N = weight.shape[-1]
+        
+    # aggregate multi-heads and detach
+    if weight.shape[1] != N:
+        new_weight = weight.mean(1).clone().detach() # B, N, N
+    else:
+        new_weight = weight.clone().detach() # B, N, N
+            
+    # deal with threshold
+    if type(threshold) == bool and not threshold:
+        pass
+            
+    elif type(threshold) == bool and threshold:
+        # filter out values less than the mean by default
+        new_weight_mean = new_weight.mean((1,2)) # B
+        new_weight_mean = new_weight_mean.reshape(B,1,1).expand(B,N,N)
+        pad = torch.zeros((B,N,N), dtype = new_weight.dtype, device = new_weight.device)
+        new_weight = torch.where(new_weight >= new_weight_mean, new_weight, pad)
+        
+    elif type(threshold) == float:
+        # filter out values less than the percentage
+        new_weight_sorted, _ = torch.sort(new_weight.reshape(B,-1), dim=1, descending=True) # B, N*N
+        new_weight_threshold = new_weight_sorted[:, int(N*N*threshold)] # B
+        new_weight_threshold = new_weight_threshold.reshape(B,1,1).expand(B,N,N) # B,N,N
+        pad = torch.zeros((B,N,N), dtype = new_weight.dtype, device = new_weight.device)
+        new_weight = torch.where(new_weight >= new_weight_threshold, new_weight, pad)
+        
+        """
+        # test only
+        print(torch.count_nonzero(new_weight, dim=(1,2))/(N*N))
+        assert False
+        """
+        
+    # PageRank
+    pagerank = torch.ones((B, N-1, 1), device=new_weight.device) / (N-1) # B, N-1, 1
+    trans_matrix = new_weight[:,1:,1:].transpose(-1, -2) # transition matrix: B, N-1, N-1
+    trans_matrix = trans_matrix / trans_matrix.sum(-2, keepdim=True) # B, N-1, N-1
+    """
+    # PageRank
+    pagerank = torch.ones((B, N, 1), device=new_weight.device) / N # B, N-1, 1
+    trans_matrix = new_weight.transpose(-1, -2) # transition matrix: B, N-1, N-1
+    # trans_matrix = trans_matrix / trans_matrix.sum(-2, keepdim=True) # B, N-1, N-1
+    """
+        
+    for i in range(max_iter):
+        new_pagerank = d * trans_matrix @ pagerank + (1-d) / (N-1) # page rank update with dumping
+        dist = torch.linalg.norm((new_pagerank-pagerank).squeeze())
+        pagerank = new_pagerank
+        if dist < min_dist:
+            break
+                
+    return pagerank.squeeze() # B, N-1
+        
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
@@ -295,7 +361,7 @@ class GraphPropagationTransformer(VisionTransformer):
             )
             for i in range(depth)])
 
-
+        
 @register_model
 def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,

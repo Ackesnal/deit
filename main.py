@@ -37,7 +37,26 @@ def get_macs(model, x=None):
     macs = profile_macs(model, x)
     return macs
 
-    
+
+def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
+    if x is None:
+        x = torch.rand(batchsize, 3, 224, 224).cuda()
+    else:
+        batchsize = x.shape[0]
+    model.eval()
+
+    start = time.time()
+    for i in range(ntest):
+        model(x, **kwargs)
+    torch.cuda.synchronize()
+    end = time.time()
+
+    elapse = end - start
+    speed = batchsize * ntest / elapse
+
+    return speed
+
+
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=64, type=int)
@@ -201,6 +220,7 @@ def get_args_parser():
     return parser
 
 
+
 def main(args):
     utils.init_distributed_mode(args)
 
@@ -285,8 +305,7 @@ def main(args):
         propagation=args.propagation,
         reduction_num=args.reduction_num
     )
-
-                    
+    
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -346,6 +365,20 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
+    
+    if args.test_speed:
+        # test model throughput for three times to ensure accuracy
+        print('Start inference speed testing...')
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        MACs = get_macs(model)
+        print('GMACs:', MACs * 1e-9)
+    if args.only_test_speed:
+        return
 
     model_ema = None
     if args.model_ema:
@@ -391,7 +424,7 @@ def main(args):
             args.teacher_model,
             pretrained=False,
             num_classes=args.nb_classes,
-            global_pool='avg',
+            global_pool='token',
         )
         if args.teacher_path.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -428,19 +461,6 @@ def main(args):
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        return
-    
-    if args.test_speed:
-        # test model throughput for three times to ensure accuracy
-        """inference_speed = speed_test(model)
-        print('inference_speed (inaccurate):', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')"""
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
-    if args.only_test_speed:
         return
     
     

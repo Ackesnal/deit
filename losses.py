@@ -38,15 +38,16 @@ class DistillationLoss(torch.nn.Module):
         base_loss = self.base_criterion(outputs, labels)
         if self.distillation_type == 'none':
             return base_loss
-
+        
         if outputs_kd is None:
             raise ValueError("When knowledge distillation is enabled, the model is "
                              "expected to return a Tuple[Tensor, Tensor] with the output of the "
                              "class_token and the dist_token")
+                             
         # don't backprop throught the teacher
         with torch.no_grad():
             teacher_outputs = self.teacher_model(inputs)
-
+        
         if self.distillation_type == 'soft':
             T = self.tau
             # taken from https://github.com/peterliht/knowledge-distillation-pytorch/blob/master/model/net.py#L100
