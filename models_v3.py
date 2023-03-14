@@ -374,6 +374,11 @@ class GraphPropagationTransformer(VisionTransformer):
         x_part3 = x_img[:, 1::2, 0::2].reshape(B, -1, C) # B, N/4, C
         x_part4 = x_img[:, 1::2, 1::2].reshape(B, -1, C) # B, N/4, C
         
+        x_part1 = x_part1 + x_part2
+        x_part2 = x_part2 + x_part3
+        x_part3 = x_part3 + x_part4
+        x_part4 = x_part4 + x_part1
+        
         x_1 = torch.cat((x_cls, x_part1), dim=1)
         x_2 = torch.cat((x_cls, x_part2), dim=1)
         x_3 = torch.cat((x_cls, x_part3), dim=1)
@@ -419,7 +424,7 @@ class GraphPropagationTransformer(VisionTransformer):
         x_2 = self.forward_head(x_2)
         x_3 = self.forward_head(x_3)
         x_4 = self.forward_head(x_4)
-        x = self.head(x_1) + self.head(x_2) + self.head(x_3) + self.head(x_4)
+        x = (self.head(x_1) + self.head(x_2) + self.head(x_3) + self.head(x_4))/4
         return x
         
 @register_model
