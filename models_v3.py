@@ -365,15 +365,61 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        x_cls = x[:,0]
-        x_partial = x[:,1::4]
-        print(x_partial.shape)
-        assert False
+        x_cls = x[:,0:1]
+        x_img = x[:,1:]
+        B, N, C = x_img.shape
+        x_img = x_img.reshape(B, int(math.sqrt(N)), int(math.sqrt(N)), C)
+        x_part1 = x_img[:, 0::2, 0::2].reshape(B, -1, C) # B, N/4, C
+        x_part2 = x_img[:, 0::2, 1::2].reshape(B, -1, C) # B, N/4, C
+        x_part3 = x_img[:, 1::2, 0::2].reshape(B, -1, C) # B, N/4, C
+        x_part4 = x_img[:, 1::2, 1::2].reshape(B, -1, C) # B, N/4, C
+        
+        x_1 = torch.cat((x_cls, x_part1), dim=1)
+        x_2 = torch.cat((x_cls, x_part2), dim=1)
+        x_3 = torch.cat((x_cls, x_part3), dim=1)
+        x_4 = torch.cat((x_cls, x_part4), dim=1)
+        
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            x = checkpoint_seq(self.blocks, x)
+            x_1 = checkpoint_seq(self.blocks, x_1)
         else:
-            x = self.blocks(x)
-        x = self.norm(x)
+            x_1 = self.blocks(x_1)
+            
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            x_2 = checkpoint_seq(self.blocks, x_2)
+        else:
+            x_2 = self.blocks(x_2)
+        
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            x_3 = checkpoint_seq(self.blocks, x_3)
+        else:
+            x_3 = self.blocks(x_3)
+            
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            x_4 = checkpoint_seq(self.blocks, x_4)
+        else:
+            x_4 = self.blocks(x_4)
+            
+        x_1 = self.norm(x_1)
+        x_2 = self.norm(x_2)
+        x_3 = self.norm(x_3)
+        x_4 = self.norm(x_4)
+        
+        return x_1, x_2, x_3, x_4
+        
+        
+    def forward_head(self, x, pre_logits: bool = False):
+        if self.global_pool:
+            x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
+        x = self.fc_norm(x)
+        return x #if pre_logits else self.head(x)
+
+    def forward(self, x):
+        x_1, x_2, x_3, x_4 = self.forward_features(x)
+        x_1 = self.forward_head(x_1)
+        x_2 = self.forward_head(x_2)
+        x_3 = self.forward_head(x_3)
+        x_4 = self.forward_head(x_4)
+        x = self.head(x_1) + self.head(x_2) + self.head(x_3) + self.head(x_4)
         return x
         
 @register_model
