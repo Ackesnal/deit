@@ -360,7 +360,21 @@ class GraphPropagationTransformer(VisionTransformer):
                 reduction_num=reduction_num
             )
             for i in range(depth)])
-
+    
+    def forward_features(self, x):
+        x = self.patch_embed(x)
+        x = self._pos_embed(x)
+        x = self.norm_pre(x)
+        x_cls = x[:,0]
+        x_partial = x[:,1::4]
+        print(x_partial.shape)
+        assert False
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            x = checkpoint_seq(self.blocks, x)
+        else:
+            x = self.blocks(x)
+        x = self.norm(x)
+        return x
         
 @register_model
 def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
