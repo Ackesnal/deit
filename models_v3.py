@@ -161,7 +161,10 @@ def select(weight, standard, descending=True):
         token_rank = weight[:,:,1:,1:].mean(1).sum(-2) # B, N-1
             
     elif standard == "DiagAttn":
-        token_rank = weight.mean(1).reshape(B, N*N)[:, 0::N+1][:,1:]
+        token_rank = weight.mean(1).reshape(B, N*N)[:, N+1::N+1]
+        
+    elif standard == "DiagAttnMax":
+        token_rank = weight.max(1).reshape(B, N*N)[:, N+1::N+1]
             
     elif standard == "Predictor":
         print("Haven't implemented")
@@ -248,7 +251,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, sparsity=0.2, reduction_num=0, alpha=0.5):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -256,9 +259,58 @@ class Attention(nn.Module):
         q = q * self.scale
 
         attn = (q @ k.transpose(-2, -1))
-        attn = attn.softmax(dim=-1)
+        attn = attn.softmax(dim=-1) # B, H, N, N
         attn = self.attn_drop(attn)
-         
+        
+        if reduction_num > 0:
+            token_rank = select(attn, "DiagAttnMax")
+        
+        # Filter out unimportant attentions
+        attn_sorted, _ = torch.sort(attn.reshape(B, H, -1), dim=1, descending=True) # B,H,N*N
+        attn_threshold = attn_sorted[:, :, int(N*N*sparsity)] # B,H
+        attn_threshold = attn_threshold.reshape(B,H,1,1).expand(B,H,N,N) # B,H,N,N
+        pad = torch.zeros((B,H,N,N), dtype = attn.dtype, device = attn.device) # B,H,N,N
+        attn = torch.where(attn >= attn_threshold, attn, pad) # B,H,N,N
+        
+        if reduction_num > 0:
+            # Select the kept and eliminated attention weights
+            index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
+            index_kept = torch.cat((index_cls, token_rank[:, :-reduction_num]+1), dim=1) # B, N-K
+            index_elim = token_rank[:, -reduction_num:]+1 # B, K
+            
+            num_kept = index_kept.shape[1]
+            num_elim = index_elim.shape[1]
+                
+            index_kept, _ = torch.sort(index_kept) # B, N-K
+            index_elim, _ = torch.sort(index_elim) # B, K
+                
+            index_B = torch.arange(B, dtype=index_kept.dtype, device=index_kept.device).reshape(B, 1).expand(B, num_kept).reshape(-1)*N
+            index_kept = index_kept.reshape(B*num_kept) + index_B
+            index_B = torch.arange(B, dtype=index_elim.dtype, device=index_elim.device).reshape(B, 1).expand(B, num_elim).reshape(-1)*N
+            index_elim = index_elim.reshape(B*num_elim) + index_B
+            
+            # divide attns
+            weight = attn
+            weight = weight.transpose(0, 1) # H, B, N, N
+            weight = weight.reshape(H, B*N, N) # H, B*N, N
+            weight = weight.index_select(dim=1, index=index_kept) # H, B*(N-K), N
+            weight = weight.reshape(H, B, num_kept, N) # H, B, (N-K), N
+            weight_all2kept = weight
+            weight = weight.transpose(2, 3) # H, B, N, (N-K)
+            weight = weight.reshape(H, B*N, num_kept) # H, B*N, (N-K)
+            weight = weight.index_select(dim=1, index=index_elim) # H, B*K, (N-K)
+            weight = weight.reshape(H, B, num_elim, num_kept) # H, B, K, (N-K)
+            weight_elim2kept = weight.transpose(2, 3) # H, B, (N-K), K
+            
+            weight = attn
+            weight = weight.transpose(0, 1) # H, B, N, N
+            weight = weight.reshape(H, B*N, N) # H, B*N, N
+            weight = weight.index_select(dim=1, index=index_elim) # H, B*K, N
+            weight_all2elim = weight.reshape(H, B, num_elim, N) # H, B, K, N
+            
+            attn = weight_all2kept + weight_elim2kept @ weight_all2elim * alpha # H, B, (N-K), N
+            attn = attn.transpose(0, 1) # B, H, (N-K), N
+        
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -269,7 +321,7 @@ class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", reduction_num=0):
+                 selection="DiagAttn", propagation="None", reduction_num=0, sparsity=1):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -285,19 +337,10 @@ class GraphPropagationBlock(nn.Module):
         self.propagation = propagation
         self.selection = selection
         self.reduction_num = reduction_num
+        self.sparsity = sparsity
     
     def forward(self, x):
-        tmp, attn = self.attn(self.norm1(x))
-        x = x + self.drop_path(self.ls1(tmp))
-        
-        if self.selection != "None" and self.reduction_num > 0:
-            # select tokens and propagate
-            token_rank = select(attn, standard=self.selection)
-            index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
-            index_kept = torch.cat((index_cls, token_rank[:, :-self.reduction_num]+1), dim=1) # B, N-K
-            index_elim = token_rank[:, -self.reduction_num:]+1 # B, K
-            x = propagate(x, attn, index_kept, index_elim, standard=self.propagation, alpha=0.5)
-        
+        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=sparsity, reduction_num=self.reduction_num, alpha=0.5)))
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x 
 
@@ -334,7 +377,8 @@ class GraphPropagationTransformer(VisionTransformer):
             block_fn=GraphPropagationBlock,
             selection="None",
             propagation="None",
-            reduction_num=0):
+            reduction_num=0,
+            sparsity=1):
         
         super().__init__(
             img_size=img_size,
@@ -371,7 +415,8 @@ class GraphPropagationTransformer(VisionTransformer):
                 act_layer=act_layer,
                 selection=selection,
                 propagation=propagation,
-                reduction_num=reduction_num
+                reduction_num=reduction_num,
+                sparsity=sparsity
             )
             for i in range(depth)])
 

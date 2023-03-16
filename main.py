@@ -212,7 +212,8 @@ def get_args_parser():
     
     parser.add_argument('--selection', default='DiagAttn')
     parser.add_argument('--propagation', default='ThresholdGraph')
-    parser.add_argument('--reduction_num', type=int, default=0)         
+    parser.add_argument('--reduction_num', type=int, default=0)    
+    parser.add_argument('--sparsity', type=float, default=1)        
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -303,7 +304,8 @@ def main(args):
         img_size=args.input_size,
         selection=args.selection,
         propagation=args.propagation,
-        reduction_num=args.reduction_num
+        reduction_num=args.reduction_num,
+        sparsity=args.sparsity
     )
     
     if args.finetune:
