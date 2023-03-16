@@ -11,7 +11,7 @@ import math
 
 
 def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                      multihead=True, threshold=True, sparsity=0.2, alpha=0.1):
+                      multihead=True, threshold=True, sparsity=0.05, alpha=0.1):
     """
     Perform graph propagation to combine the eliminated tokens into kept tokens
     x_kept -> [B, N-K, C] : The input feature map
@@ -46,6 +46,20 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         weight_threshold = weight_threshold.reshape(H, B, 1, 1).expand(H, B, num_kept, num_elim) # H, B, (N-K), K
         pad = torch.zeros((H, B, num_kept, num_elim), device = weight.device) # H, B, (N-K), K
         weight = torch.where(weight>=weight_threshold, weight, pad) # H, B, (N-K), K
+        """
+        weight_rank, _ = torch.sort(weight.reshape(H, B, -1), dim=-1, descending=True) # H, B, (N-K)*K
+        weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)] # H, B, 1
+        weight_threshold = weight_threshold.reshape(H, B, 1, 1).expand(H, B, num_kept, num_elim) # H, B, (N-K), K
+        
+        
+        pad = torch.ones((H, B, num_kept, num_elim), device = weight.device) * (-1000) # H, B, (N-K), K
+        weight_padded = torch.where(weight>=weight_threshold, weight, pad) # H, B, (N-K), K
+        weight_softmax = weight_padded.softmax(dim=-2)# 增大weight的实验 # H, B, (N-K), K
+        
+        pad = torch.zeros((H, B, num_kept, num_elim), device = weight.device) # H, B, (N-K), K
+        weight = torch.where(weight>=weight_threshold, weight_softmax, pad)
+        
+        """
         """ 
         # test only
         print(torch.count_nonzero(weight, dim=(1,2))/(num_elim*num_kept))
