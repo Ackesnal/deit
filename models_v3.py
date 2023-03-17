@@ -269,7 +269,7 @@ class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", reduction_num=0):
+                 selection="DiagAttn", propagation="None", reduction_num=0, sparsity=1):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -285,6 +285,7 @@ class GraphPropagationBlock(nn.Module):
         self.propagation = propagation
         self.selection = selection
         self.reduction_num = reduction_num
+        self.sparsity = sparsity
     
     def forward(self, x):
         tmp, attn = self.attn(self.norm1(x))
@@ -296,7 +297,7 @@ class GraphPropagationBlock(nn.Module):
             index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
             index_kept = torch.cat((index_cls, token_rank[:, :-self.reduction_num]+1), dim=1) # B, N-K
             index_elim = token_rank[:, -self.reduction_num:]+1 # B, K
-            x = propagate(x, attn, index_kept, index_elim, standard=self.propagation, alpha=0.5)
+            x = propagate(x, attn, index_kept, index_elim, standard=self.propagation, sparsity=self.sparsity, alpha=0.5)
         
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x 
@@ -334,7 +335,8 @@ class GraphPropagationTransformer(VisionTransformer):
             block_fn=GraphPropagationBlock,
             selection="None",
             propagation="None",
-            reduction_num=0):
+            reduction_num=0,
+            sparsity=1):
         
         super().__init__(
             img_size=img_size,
@@ -369,12 +371,34 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                selection=selection,
-                propagation=propagation,
-                reduction_num=reduction_num
+                selection=selection if i > 1 else "None",
+                propagation=propagation if i > 1 else "None",
+                reduction_num=reduction_num if i > 1 else 0,
+                sparsity=sparsity if i > 1 else 1
             )
             for i in range(depth)])
+    
+    def forward_features(self, x):
+        x = self.patch_embed(x)
+        x = self._pos_embed(x)
+        x = self.norm_pre(x)
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            x = checkpoint_seq(self.blocks, x)
+        else:
+            x = self.blocks(x)
+        x = self.norm(x)
+        return x
 
+    def forward_head(self, x, pre_logits: bool = False):
+        if self.global_pool:
+            x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
+        x = self.fc_norm(x)
+        return x if pre_logits else self.head(x)
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.forward_head(x)
+        return x
         
 @register_model
 def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
