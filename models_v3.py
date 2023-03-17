@@ -372,6 +372,7 @@ class GraphPropagationTransformer(VisionTransformer):
         B, N, C = x_img.shape
         x_img = x_img.reshape(B, int(math.sqrt(N)), int(math.sqrt(N)), C)
         
+        
         x_1 = x_img[:,0::2,0::2].reshape(B, -1, C)
         x_2 = x_img[:,0::2,1::2].reshape(B, -1, C)
         x_3 = x_img[:,1::2,0::2].reshape(B, -1, C)
