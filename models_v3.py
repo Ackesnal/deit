@@ -360,6 +360,8 @@ class GraphPropagationTransformer(VisionTransformer):
                 reduction_num=reduction_num
             )
             for i in range(depth)])
+            
+        #self.gatenet = nn.Linear()
     
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -369,58 +371,63 @@ class GraphPropagationTransformer(VisionTransformer):
         x_img = x[:,1:]
         B, N, C = x_img.shape
         x_img = x_img.reshape(B, int(math.sqrt(N)), int(math.sqrt(N)), C)
-        x_part1 = x_img[:, 0::2, 0::2].reshape(B, -1, C) # B, N/4, C
-        x_part2 = x_img[:, 0::2, 1::2].reshape(B, -1, C) # B, N/4, C
-        x_part3 = x_img[:, 1::2, 0::2].reshape(B, -1, C) # B, N/4, C
-        x_part4 = x_img[:, 1::2, 1::2].reshape(B, -1, C) # B, N/4, C
         
-        x_1 = torch.cat((x_cls, x_part1), dim=1)
-        x_2 = torch.cat((x_cls, x_part2), dim=1)
-        x_3 = torch.cat((x_cls, x_part3), dim=1)
-        x_4 = torch.cat((x_cls, x_part4), dim=1)
+        x_1 = x_img[:,0::2,0::2].reshape(B, -1, C)
+        x_2 = x_img[:,0::2,1::2].reshape(B, -1, C)
+        x_3 = x_img[:,1::2,0::2].reshape(B, -1, C)
+        x_4 = x_img[:,1::2,1::2].reshape(B, -1, C)
+        
+        x_1 = torch.cat((x_cls, x_1), dim=1) # B, N/4, C
+        x_2 = torch.cat((x_cls, x_2), dim=1) # B, N/4, C
+        x_3 = torch.cat((x_cls, x_3), dim=1) # B, N/4, C
+        x_4 = torch.cat((x_cls, x_4), dim=1) # B, N/4, C
+        x = torch.cat((x_1, x_2, x_3, x_4), dim=0) # B*4, N/4, C
         
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            x_1 = checkpoint_seq(self.blocks, x_1)
+            x = checkpoint_seq(self.blocks, x)
         else:
-            x_1 = self.blocks(x_1)
+            for i, blk in enumerate(self.blocks):
+                x = blk(x)
+                if i % 3 == 2:
+                    x_1 = x[:B]
+                    x_2 = x[B:B*2]
+                    x_3 = x[B*2:B*3]
+                    x_4 = x[B*3:]
+                    x_1_new = torch.cat((x_1[:,0:1], x_2[:,1:]), dim=1)
+                    x_2_new = torch.cat((x_2[:,0:1], x_3[:,1:]), dim=1)
+                    x_3_new = torch.cat((x_3[:,0:1], x_4[:,1:]), dim=1)
+                    x_4_new = torch.cat((x_4[:,0:1], x_1[:,1:]), dim=1)
+                    x = torch.cat((x_1_new, x_2_new, x_3_new, x_4_new), dim=0)
             
-        if self.grad_checkpointing and not torch.jit.is_scripting():
-            x_2 = checkpoint_seq(self.blocks, x_2)
-        else:
-            x_2 = self.blocks(x_2)
+        x = self.norm(x)
         
-        if self.grad_checkpointing and not torch.jit.is_scripting():
-            x_3 = checkpoint_seq(self.blocks, x_3)
-        else:
-            x_3 = self.blocks(x_3)
-            
-        if self.grad_checkpointing and not torch.jit.is_scripting():
-            x_4 = checkpoint_seq(self.blocks, x_4)
-        else:
-            x_4 = self.blocks(x_4)
-            
-        x_1 = self.norm(x_1)
-        x_2 = self.norm(x_2)
-        x_3 = self.norm(x_3)
-        x_4 = self.norm(x_4)
-        
-        return x_1, x_2, x_3, x_4
+        return x
         
         
     def forward_head(self, x, pre_logits: bool = False):
         if self.global_pool:
             x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
         x = self.fc_norm(x)
-        return x #if pre_logits else self.head(x)
+        return x # if pre_logits else self.head(x)
 
     def forward(self, x):
-        x_1, x_2, x_3, x_4 = self.forward_features(x)
-        x_1 = self.forward_head(x_1)
-        x_2 = self.forward_head(x_2)
-        x_3 = self.forward_head(x_3)
-        x_4 = self.forward_head(x_4)
-        x = self.head(x_1) + self.head(x_2) + self.head(x_3) + self.head(x_4)
-        return x
+        x = self.forward_features(x)
+        x = self.forward_head(x)
+        
+        x_1 = x[:x.shape[0]//4].unsqueeze(1)
+        x_2 = x[x.shape[0]//4:x.shape[0]//2].unsqueeze(1)
+        x_3 = x[x.shape[0]//2:x.shape[0]//4*3].unsqueeze(1)
+        x_4 = x[x.shape[0]//4*3:].unsqueeze(1)
+        x = torch.cat((x_1, x_2, x_3, x_4), dim=1) # B, 4, C
+        
+        x = self.head(x)
+        max_indices = torch.argmax(x, dim=-1) # B, 4 代表最大值的位置
+        max_values, max_indices = torch.mode(max_indices, dim=1) # B
+        #print(max_values)
+        
+        #x = self.gatenet(x_1, x_2, x_3, x_4)
+        
+        return x.mean(1)
         
 @register_model
 def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
