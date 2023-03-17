@@ -212,8 +212,9 @@ def get_args_parser():
     
     parser.add_argument('--selection', default='DiagAttn')
     parser.add_argument('--propagation', default='ThresholdGraph')
-    parser.add_argument('--reduction_num', type=int, default=0)
+    parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
+    parser.add_argument('--start_layer', type=int, default=0)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -304,7 +305,9 @@ def main(args):
         img_size=args.input_size,
         selection=args.selection,
         propagation=args.propagation,
-        reduction_num=args.reduction_num
+        num_prop=args.num_prop,
+        sparsity=args.sparsity,
+        start_layer=args.start_layer
     )
     
     if args.finetune:
@@ -464,7 +467,8 @@ def main(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
     
-    
+    MACs = get_macs(model)
+    print('Model GMACs:', MACs * 1e-9)
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0

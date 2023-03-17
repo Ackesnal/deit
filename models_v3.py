@@ -88,7 +88,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     return x_kept
 
 
-def propagate(x, weight, index_kept, index_elim, standard=None, alpha=1):
+def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, alpha=1):
     B, N, C = x.shape
     num_kept = index_kept.shape[1]
     num_elim = index_elim.shape[1]
@@ -141,12 +141,13 @@ def select(weight, standard, descending=True):
     standard: "PageRank", "ThresholdPageRank", "CLSAttn" or "Predictor"
     weight: could be attention map (B*H*N*N) or original feature map (B*N*C)
     """
-    if len(weight.shape) == 3:
-        # feature map
-        B, N, C = weight.shape
-    elif len(weight.shape) == 4:
+    if len(weight.shape) == 4:
         # attention map
         B, H, N, _ = weight.shape
+    else:
+        print("Select criterion without attention map hasn't been supported yet.")
+        assert False
+    
     
     if standard == "PageRank":
         token_rank = pagerank(weight) # B, N-1
@@ -155,13 +156,16 @@ def select(weight, standard, descending=True):
         token_rank = pagerank(weight, threshold=0.3) # B, N-1
             
     elif standard == "CLSAttn":
-        token_rank = weight.mean(1)[:,0,1:] # B, N-1
+        token_rank = weight[:,:,0,1:].mean(1) # B, N-1
             
     elif standard == "IMGAttn":
         token_rank = weight[:,:,1:,1:].mean(1).sum(-2) # B, N-1
             
     elif standard == "DiagAttn":
-        token_rank = weight.mean(1).reshape(B, N*N)[:, 0::N+1][:,1:]
+        token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1)
+        
+    elif standard == "DiagAttnMax":
+        token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].max(1)[0]
             
     elif standard == "Predictor":
         print("Haven't implemented")
@@ -269,7 +273,7 @@ class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", reduction_num=0, sparsity=1):
+                 selection="DiagAttn", propagation="None", num_prop=0, sparsity=1):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -284,19 +288,19 @@ class GraphPropagationBlock(nn.Module):
         
         self.propagation = propagation
         self.selection = selection
-        self.reduction_num = reduction_num
+        self.num_prop = num_prop
         self.sparsity = sparsity
     
     def forward(self, x):
         tmp, attn = self.attn(self.norm1(x))
         x = x + self.drop_path(self.ls1(tmp))
         
-        if self.selection != "None" and self.reduction_num > 0:
+        if self.selection != "None" and self.num_prop > 0:
             # select tokens and propagate
             token_rank = select(attn, standard=self.selection)
             index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
-            index_kept = torch.cat((index_cls, token_rank[:, :-self.reduction_num]+1), dim=1) # B, N-K
-            index_elim = token_rank[:, -self.reduction_num:]+1 # B, K
+            index_kept = torch.cat((index_cls, token_rank[:, :-self.num_prop]+1), dim=1) # B, N-K
+            index_elim = token_rank[:, -self.num_prop:]+1 # B, K
             x = propagate(x, attn, index_kept, index_elim, standard=self.propagation, sparsity=self.sparsity, alpha=0.5)
         
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
@@ -335,8 +339,9 @@ class GraphPropagationTransformer(VisionTransformer):
             block_fn=GraphPropagationBlock,
             selection="None",
             propagation="None",
-            reduction_num=0,
-            sparsity=1):
+            num_prop=0,
+            sparsity=1,
+            start_layer=0):
         
         super().__init__(
             img_size=img_size,
@@ -371,10 +376,10 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                selection=selection if i > 1 else "None",
-                propagation=propagation if i > 1 else "None",
-                reduction_num=reduction_num if i > 1 else 0,
-                sparsity=sparsity if i > 1 else 1
+                selection=selection if i >= start_layer else "None",
+                propagation=propagation if i >= start_layer else "None",
+                num_prop=num_prop if i >= start_layer else 0,
+                sparsity=sparsity if i >= start_layer else 1
             )
             for i in range(depth)])
     
