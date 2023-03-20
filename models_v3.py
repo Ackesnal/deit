@@ -88,8 +88,10 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     return x_kept
 
 
+
 def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, alpha=1):
     B, N, C = x.shape
+    B, H, N, _ = weight.shape
     num_kept = index_kept.shape[1]
     num_elim = index_elim.shape[1]
         
@@ -104,6 +106,19 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
     # divide tokens
     x_kept = x.reshape(B*N, C).index_select(dim=0, index=index_kept).reshape(B, num_kept, C)
     x_elim = x.reshape(B*N, C).index_select(dim=0, index=index_elim).reshape(B, num_elim, C)
+    
+    # get reconstruct weight
+    #print(weight.shape)
+    reconstruct_weight = weight.transpose(0, 1) # H, B, N, N
+    reconstruct_weight = reconstruct_weight.reshape(H, B*N, N) # H, B*N, N
+    reconstruct_weight = reconstruct_weight.index_select(dim=1, index=index_elim) # H, B*K, N
+    reconstruct_weight = reconstruct_weight.reshape(H, B, num_elim, N) # H, B, K, N
+    reconstruct_weight = reconstruct_weight.transpose(2, 3) # H, B, N, K
+    reconstruct_weight = reconstruct_weight.reshape(H, B*N, num_elim) # H, B*N, K
+    reconstruct_weight = reconstruct_weight.index_select(dim=1, index=index_kept) # H, B*(N-K), K
+    reconstruct_weight = reconstruct_weight.reshape(H, B, num_kept, num_elim) # H, B, N-K, K
+    reconstruct_weight = reconstruct_weight.permute(1, 0, 3, 2) # B, H, K, (N-K)
+    #print(reconstruct_weight.shape)
     
     if standard is None or standard == "none" or standard == "None":
         # No further propagation
@@ -122,18 +137,19 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
                                    multihead=True, threshold=True, alpha=alpha)
             
     elif standard == "SingleHeadThresholdGraph":
-       x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                  multihead=False, threshold=True, alpha=alpha)
+        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=False, threshold=True, alpha=alpha)
     
     elif standard == "SingleHeadGraph":
-       x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                  multihead=False, threshold=False, alpha=alpha)
+        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=False, threshold=False, alpha=alpha)
     
     else:
         print("Type\'", standard, "\' propagation not supported.")
         assert False
             
-    return x_kept
+    return x_kept, reconstruct_weight
+
 
 
 def select(weight, standard, descending=True):
@@ -147,7 +163,6 @@ def select(weight, standard, descending=True):
     else:
         print("Select criterion without attention map hasn't been supported yet.")
         assert False
-    
     
     if standard == "PageRank":
         token_rank = pagerank(weight) # B, N-1
@@ -180,6 +195,7 @@ def select(weight, standard, descending=True):
         
     token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
     return token_rank # B, N-1
+
 
 
 def pagerank(weight, max_iter = 20, d = 0.95, min_dist = 1e-3, threshold = False):
@@ -239,6 +255,19 @@ def pagerank(weight, max_iter = 20, d = 0.95, min_dist = 1e-3, threshold = False
     return pagerank.squeeze() # B, N-1
         
 
+
+def reconstruct(x, weights):
+    B, N, C = x.shape
+    B, H, _, _ = weights[0].shape
+    x = x.reshape(B, N, H, C//H).transpose(1,2) # B, H, N, C//H
+    for i in range(len(weights)-1, -1, -1):
+        weight = weights[i] # B, H, K, N
+        x_reconstructed = weight @ x
+        x = torch.cat((x, x_reconstructed), dim = 2)
+    return x
+            
+            
+
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
@@ -269,6 +298,7 @@ class Attention(nn.Module):
         return x, attn
 
 
+
 class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
@@ -291,7 +321,10 @@ class GraphPropagationBlock(nn.Module):
         self.num_prop = num_prop
         self.sparsity = sparsity
     
-    def forward(self, x):
+    def forward(self, x, reconstruct_weights = None):
+        if reconstruct_weights is not None:
+            x = reconstruct(x, reconstruct_weights)
+        
         tmp, attn = self.attn(self.norm1(x))
         x = x + self.drop_path(self.ls1(tmp))
         
@@ -301,10 +334,13 @@ class GraphPropagationBlock(nn.Module):
             index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
             index_kept = torch.cat((index_cls, token_rank[:, :-self.num_prop]+1), dim=1) # B, N-K
             index_elim = token_rank[:, -self.num_prop:]+1 # B, K
-            x = propagate(x, attn, index_kept, index_elim, standard=self.propagation, sparsity=self.sparsity, alpha=0.5)
-        
+            x, reconstruct_weight = propagate(x, attn, index_kept, index_elim, standard=self.propagation, sparsity=self.sparsity, alpha=0.5)
+        else:
+            reconstruct_weight = None
+            
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        return x 
+        return x, reconstruct_weight
+
 
 
 class GraphPropagationTransformer(VisionTransformer):
@@ -387,10 +423,17 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
+        reconstruct_weights = []
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
-            x = self.blocks(x)
+            for i, blk in enumerate(self.blocks):
+                if i < len(self.blocks)-1:
+                    x, reconstruct_weight = blk(x)
+                    if reconstruct_weight is not None:
+                        reconstruct_weights.append(reconstruct_weight)
+                else:
+                    x = blk(x, reconstruct_weights)
         x = self.norm(x)
         return x
 
@@ -404,6 +447,8 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.forward_features(x)
         x = self.forward_head(x)
         return x
+        
+        
         
 @register_model
 def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
