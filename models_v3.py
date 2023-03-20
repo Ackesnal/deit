@@ -264,7 +264,7 @@ def reconstruct(x, weights):
         weight = weights[i] # B, H, K, N
         x_reconstructed = weight @ x
         x = torch.cat((x, x_reconstructed), dim = 2)
-    x.transpose(1,2).reshape(B, -1, C)
+    x = x.transpose(1,2).reshape(B, -1, C)
     return x
             
             
@@ -429,12 +429,12 @@ class GraphPropagationTransformer(VisionTransformer):
             x = checkpoint_seq(self.blocks, x)
         else:
             for i, blk in enumerate(self.blocks):
-                if i < len(self.blocks)-1:
+                if i <= len(self.blocks)-1:
                     x, reconstruct_weight = blk(x)
                     if reconstruct_weight is not None:
                         reconstruct_weights.append(reconstruct_weight)
                 else:
-                    x = blk(x, reconstruct_weights)
+                    x, reconstruct_weight = blk(x, reconstruct_weights)
         x = self.norm(x)
         return x
 
