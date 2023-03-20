@@ -203,6 +203,7 @@ def get_args_parser():
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
                         help='')
+    parser.add_argument('--accumulation-steps', default=1, type=int)
     parser.set_defaults(pin_mem=True)
 
     # distributed training parameters
@@ -210,11 +211,7 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--selection', default='DiagAttn')
-    parser.add_argument('--propagation', default='ThresholdGraph')
-    parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
-    parser.add_argument('--start_layer', type=int, default=0)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -303,11 +300,7 @@ def main(args):
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
         img_size=args.input_size,
-        selection=args.selection,
-        propagation=args.propagation,
-        num_prop=args.num_prop,
-        sparsity=args.sparsity,
-        start_layer=args.start_layer
+        sparsity=args.sparsity
     )
     
     if args.finetune:
@@ -400,10 +393,18 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
     if not args.unscale_lr:
-        linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
-        args.lr = linear_scaled_lr
+        args.lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
+        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 512.0
+        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 512.0
+    # gradient accumulation also need to scale the learning rate
+    if args.accumulation_steps > 1:
+        args.lr = args.lr * args.accumulation_steps
+        args.warmup_lr = args.warmup_lr * args.accumulation_steps
+        args.min_lr = args.min_lr * args.accumulation_steps
+        
     optimizer = create_optimizer(args, model_without_ddp)
-    loss_scaler = NativeScaler()
+    # loss_scaler = NativeScaler()
+    loss_scaler = utils.NativeScalerWithGradNormCount()
 
     lr_scheduler, _ = create_scheduler(args, optimizer)
 
@@ -483,10 +484,11 @@ def main(args):
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
-            args = args,
+            lr_scheduler = lr_scheduler,
+            args = args
         )
 
-        lr_scheduler.step(epoch)
+        # lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             for checkpoint_path in checkpoint_paths:
