@@ -264,6 +264,7 @@ def reconstruct(x, weights):
         weight = weights[i] # B, H, K, N
         x_reconstructed = weight @ x
         x = torch.cat((x, x_reconstructed), dim = 2)
+    x.transpose(1,2).reshape(B, -1, C)
     return x
             
             
