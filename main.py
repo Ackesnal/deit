@@ -13,7 +13,7 @@ from pathlib import Path
 from timm.data import Mixup
 from timm.models import create_model
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
-from timm.scheduler import create_scheduler
+from timm.scheduler import create_scheduler, create_scheduler_v2, scheduler_kwargs
 from timm.optim import create_optimizer
 from timm.utils import NativeScaler, get_state_dict, ModelEma
 
@@ -401,13 +401,22 @@ def main(args):
         args.lr = args.lr * args.accumulation_steps
         args.warmup_lr = args.warmup_lr * args.accumulation_steps
         args.min_lr = args.min_lr * args.accumulation_steps
+        args.step_on_epochs = False
+        args.sched_on_updates = True
+        args.updates_per_epoch = len(data_loader_train)//args.accumulation_steps
         
     optimizer = create_optimizer(args, model_without_ddp)
-    # loss_scaler = NativeScaler()
-    loss_scaler = utils.NativeScalerWithGradNormCount()
-
-    lr_scheduler, _ = create_scheduler(args, optimizer)
-
+    if args.accumulation_steps <= 1:
+        loss_scaler = NativeScaler()
+    else:
+        loss_scaler = utils.NativeScalerWithGradNormCount()
+        
+    lr_scheduler, num_epochs = create_scheduler_v2(
+        optimizer,
+        **scheduler_kwargs(args),
+        updates_per_epoch=args.updates_per_epoch,
+    )
+    
     criterion = LabelSmoothingCrossEntropy()
 
     if mixup_active:

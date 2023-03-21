@@ -5,8 +5,8 @@ import torch.nn as nn
 from functools import partial
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
-from timm.models.registry import register_model
-from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
+from timm.models._registry import register_model
+from timm.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
 
 
@@ -98,7 +98,8 @@ class GraphPropagationTransformer(VisionTransformer):
             norm_layer=nn.LayerNorm,
             act_layer=nn.GELU,
             block_fn=GraphPropagationBlock,
-            sparsity=1,):
+            sparsity=1,
+            pretrained_cfg_overlay=None):
         
         super().__init__(
             img_size=img_size,

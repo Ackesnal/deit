@@ -7,8 +7,8 @@ from functools import partial
 
 from timm.models.vision_transformer import Mlp, PatchEmbed , _cfg
 
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from timm.models.registry import register_model
+from timm.layers import DropPath, to_2tuple, trunc_normal_
+from timm.models._registry import register_model
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
