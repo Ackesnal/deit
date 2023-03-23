@@ -6,9 +6,46 @@ from functools import partial
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models._registry import register_model
-from timm.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
+from timm.layers import trunc_normal_, PatchEmbed, DropPath
 import math
 
+
+
+class Mlp(nn.Module):
+    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
+    """
+    def __init__(
+            self,
+            in_features,
+            hidden_features=None,
+            out_features=None,
+            act_layer=nn.GELU,
+            bias=True,
+            drop=0.,
+            use_conv=False,
+    ):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        bias = to_2tuple(bias)
+        drop_probs = to_2tuple(drop)
+        linear_layer = partial(nn.Conv2d, kernel_size=1) if use_conv else nn.Linear
+
+        self.fc1 = linear_layer(in_features, hidden_features, bias=bias[0])
+        self.act = act_layer()
+        self.drop1 = nn.Dropout(drop_probs[0])
+        self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
+        self.drop2 = nn.Dropout(drop_probs[1])
+
+    def forward(self, x, x0=None):
+        if x0 is None:
+            x = self.fc1(x)
+            x = self.act(x)
+            x = self.drop1(x)
+            x = self.fc2(x)
+            x = self.drop2(x)
+        return x
+        
 
 
 class Attention(nn.Module):
@@ -23,8 +60,10 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.beta = 0.9
+        self.alpha = 0.9
 
-    def forward(self, x, sparsity = 1):
+    def forward(self, x, sparsity=1, x0=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -34,10 +73,22 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
+        
+        if sparsity < 1:
+            attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
+            attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
+            attn_threshold = attn_threshold.reshape(B, H, 1, 1).expand(B, H, N, N) # B, H, N, N
+            pad = torch.zeros((B, H, N, N), device = weight.device) # B, H, N, N
+            attn = torch.where(attn>=attn_threshold, attn, pad) # H, B, (N-K), K
          
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        if x0 is None:
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+        else:
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = x*self.alpha + x0*(1-self.alpha)
+            x = self.proj_drop(self.proj(x)) * self.beta + x * (1-self.beta)
         return x
 
 
@@ -46,7 +97,7 @@ class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", num_prop=0, sparsity=1):
+                 selection="DiagAttn", propagation="None", num_prop=0, sparsity=1, identity=False):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -60,10 +111,15 @@ class GraphPropagationBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         
         self.sparsity = sparsity
+        self.identity = identity
     
-    def forward(self, x):
-        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity = 1)))
-        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+    def forward(self, x, x0=None):
+        if not self.identity:
+            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity)))
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+        else:
+            x = self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity, x0=x0)))
+            x = self.drop_path(self.ls2(self.mlp(self.norm2(x), x0=x0)))
         return x
 
 
@@ -99,6 +155,7 @@ class GraphPropagationTransformer(VisionTransformer):
             act_layer=nn.GELU,
             block_fn=GraphPropagationBlock,
             sparsity=1,
+            identity=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -134,7 +191,8 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                sparsity=sparsity
+                sparsity=sparsity,
+                identity=identity
             )
             for i in range(depth)])
     

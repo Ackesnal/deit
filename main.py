@@ -212,6 +212,7 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
     parser.add_argument('--sparsity', type=float, default=1)
+    parser.add_argument('--identity', default=False, action='store_true',)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -300,7 +301,8 @@ def main(args):
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
         img_size=args.input_size,
-        sparsity=args.sparsity
+        sparsity=args.sparsity,
+        identity=args.identity
     )
     
     if args.finetune:
