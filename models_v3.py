@@ -78,9 +78,9 @@ class Attention(nn.Module):
         if sparsity < 1:
             attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
             attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
-            attn_threshold = attn_threshold.reshape(B, H, 1, 1).expand(B, H, N, N) # B, H, N, N
-            pad = torch.zeros((B, H, N, N), device = weight.device) # B, H, N, N
-            attn = torch.where(attn>=attn_threshold, attn, pad) # H, B, (N-K), K
+            attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, N, N) # B, H, N, N
+            pad = torch.zeros((B, self.num_heads, N, N), device = attn.device) # B, H, N, N
+            attn = torch.where(attn>=attn_threshold, attn, pad) # B, H, N, N
          
         if x0 is None:
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -256,4 +256,3 @@ def graph_propagation_deit_small_patch16_224_layer36(pretrained=False, pretraine
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
-            
