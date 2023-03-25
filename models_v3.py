@@ -10,6 +10,8 @@ from timm.layers import trunc_normal_, PatchEmbed, DropPath
 from timm.layers.helpers import to_2tuple
 import math
 
+import torch.utils.checkpoint as checkpoint
+
 
 
 class Mlp(nn.Module):
@@ -188,7 +190,7 @@ class GraphPropagationTransformer(VisionTransformer):
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate)
             
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule   
         self.blocks = nn.Sequential(*[
             block_fn(
                 dim=embed_dim,
@@ -205,16 +207,28 @@ class GraphPropagationTransformer(VisionTransformer):
                 identity=identity
             )
             for i in range(depth)])
+        
+        self.identity = identity
     
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
+        if self.identity:
+            x0 = x
         reconstruct_weights = []
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            x = checkpoint_seq(self.blocks, x)
+            if self.identity:
+                for blk in self.blocks:
+                    x = checkpoint.checkpoint(blk, x, x0)
+            else:
+                x = checkpoint_seq(self.blocks, x)
         else:
-            x = self.blocks(x)
+            if self.identity:
+                for blk in self.blocks:
+                    x = blk(x, x0)
+            else:
+                x = self.blocks(x)
         x = self.norm(x)
         return x
 
