@@ -39,23 +39,13 @@ class Mlp(nn.Module):
         self.drop1 = nn.Dropout(drop_probs[0])
         self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
         self.drop2 = nn.Dropout(drop_probs[1])
-        self.alpha = 0.9
 
     def forward(self, x, residual=False):
-        if not residual:
-            x = self.fc1(x)
-            x = self.act(x)
-            x = self.drop1(x)
-            x = self.fc2(x)
-            x = self.drop2(x)
-        else:
-            x0 = x
-            x = self.fc1(x)
-            x = self.act(x)
-            x = self.drop1(x)
-            x = self.fc2(x)
-            x = self.drop2(x)
-            x = x*self.alpha + x0*(1-self.alpha)
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
         return x
         
 
@@ -73,7 +63,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.beta = 0.9
-        self.alpha = 0.9
+        self.alpha = 0.1
 
     def forward(self, x, sparsity=1, x0=None):
         B, N, C = x.shape
@@ -99,8 +89,8 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
         else:
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = x*self.alpha + x0*(1-self.alpha)
-            x = self.proj_drop(self.proj(x))*self.beta + x*(1-self.beta)
+            x = x*(1-self.alpha) + x0*self.alpha
+            x = x*(1-self.beta) + self.proj_drop(self.proj(x))*self.beta
         return x
 
 
@@ -130,8 +120,8 @@ class GraphPropagationBlock(nn.Module):
             x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity)))
             x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         else:
-            x = self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity, x0=x0)))
-            x = self.drop_path(self.ls2(self.mlp(self.norm2(x), residual=True)))
+            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity, x0=x0)))
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
