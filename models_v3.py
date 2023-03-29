@@ -28,6 +28,9 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     num_elim = x_elim.shape[1]
     B, H, N, _ = weight.shape
     
+    if alpha == 0:
+        return x_kept, torch.zeros((B, H, num_kept, num_elim), device = weight.device)
+    
     # Step 1: select weights that propagate from eliminated tokens to kept tokens.
     weight = weight.transpose(0, 1) # H, B, N, N
     weight = weight.reshape(H, B*N, N) # H, B*N, N
@@ -37,29 +40,24 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     weight = weight.reshape(H, B*N, num_kept) # H, B*N, (N-K)
     weight = weight.index_select(dim=1, index=index_elim) # H, B*K, (N-K)
     weight = weight.reshape(H, B, num_elim, num_kept) # H, B, K, (N-K)
-    weight = weight.transpose(2, 3) # H, B, (N-K), K
+    weight = weight.permute(1, 0, 3, 2) # B, H, (N-K), K
     
     # Step 2: filter out insignificant edges, depending on the sparsity
     if threshold:
-        weight_rank, _ = torch.sort(weight.reshape(H, B, -1), dim=-1, descending=True) # H, B, (N-K)*K
-        weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)] # H, B, 1
-        weight_threshold = weight_threshold.reshape(H, B, 1, 1).expand(H, B, num_kept, num_elim) # H, B, (N-K), K
-        pad = torch.zeros((H, B, num_kept, num_elim), device = weight.device) # H, B, (N-K), K
-        weight = torch.where(weight>=weight_threshold, weight, pad) # H, B, (N-K), K
-        """
-        weight_rank, _ = torch.sort(weight.reshape(H, B, -1), dim=-1, descending=True) # H, B, (N-K)*K
-        weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)] # H, B, 1
-        weight_threshold = weight_threshold.reshape(H, B, 1, 1).expand(H, B, num_kept, num_elim) # H, B, (N-K), K
-        
-        
-        pad = torch.ones((H, B, num_kept, num_elim), device = weight.device) * (-1000) # H, B, (N-K), K
-        weight_padded = torch.where(weight>=weight_threshold, weight, pad) # H, B, (N-K), K
-        weight_softmax = weight_padded.softmax(dim=-2)# 增大weight的实验 # H, B, (N-K), K
-        
-        pad = torch.zeros((H, B, num_kept, num_elim), device = weight.device) # H, B, (N-K), K
-        weight = torch.where(weight>=weight_threshold, weight_softmax, pad)
+        weight_rank, _ = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True) # B, H, (N-K)*K
+        weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)] # B, H, 1
+        weight_threshold = weight_threshold.reshape(B, H, 1, 1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
+        pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
+        weight = torch.where(weight>=weight_threshold, weight, pad) # B, H, (N-K), K
         
         """
+        weight_rank, _ = torch.sort(weight, dim=-2, descending=True) # B, H, (N-K)*K
+        weight_threshold = weight_rank[:, :, int(num_kept * sparsity), :] # B, H, K  
+        weight_threshold = weight_threshold.reshape(B, H, 1, num_elim).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
+        pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
+        weight = torch.where(weight>=weight_threshold, weight, pad) # B, H, (N-K), K
+        """
+        
         """ 
         # test only
         print(torch.count_nonzero(weight, dim=(1,2))/(num_elim*num_kept))
@@ -68,24 +66,24 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     
     # Step 3: propagate tokens
     if multihead:
-        x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).permute(2, 0, 1, 3) # H, B, (N-K), C//H
-        x_prop = x_prop.permute(1, 2, 0, 3).reshape(B, num_kept, C) # B, (N-K), C
+        x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2) # B, H, (N-K), C//H
+        x_prop = x_prop.transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
         """
         # sparse matrixm multiplication
-        weight = weight.reshape(H*B, num_kept, num_elim)
-        weight = weight.to_sparse()
-        x_elim = x_elim.reshape(B, num_elim, H, C//H).permute(2, 0, 1, 3).reshape(H*B, num_elim, C//H)
-        x_prop = torch.bmm(weight, x_elim) # H, B, (N-K), C//H
-        x_prop = x_prop.reshape(H, B, num_kept, C//H).permute(1, 2, 0, 3).reshape(B, num_kept, C) # B, (N-K), C
+        weight = weight.reshape(B*H, num_kept, num_elim)
+        weight = weight.to_sparse_coo().type(torch.double)
+        x_elim = x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2).reshape(B*H, num_elim, C//H) # B, H, K, C//H
+        x_prop = torch.bmm(weight, x_elim.type(torch.double)) # B, H, (N-K), C//H
+        x_prop = x_prop.reshape(B, H, num_kept, C//H).transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
         """
     else:
-        weight = weight.mean(0) # B, (N-K), K
+        weight = weight.mean(1) # B, (N-K), K
         x_prop = weight @ x_elim # B, N-K, C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
     
-    return x_kept
+    return x_kept, weight
 
 
 
@@ -108,7 +106,6 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
     x_elim = x.reshape(B*N, C).index_select(dim=0, index=index_elim).reshape(B, num_elim, C)
     
     # get reconstruct weight
-    #print(weight.shape)
     reconstruct_weight = weight.transpose(0, 1) # H, B, N, N
     reconstruct_weight = reconstruct_weight.reshape(H, B*N, N) # H, B*N, N
     reconstruct_weight = reconstruct_weight.index_select(dim=1, index=index_elim) # H, B*K, N
@@ -129,26 +126,30 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
         x_kept = alpha * x_kept + (1-alpha) * x_elim.mean(1, keepdim=True)
             
     elif standard == "Graph":
-        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                   multihead=True, threshold=False, alpha=alpha)
+        x_kept, weight = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=True, threshold=False, sparsity=sparsity, 
+                                   alpha=alpha)
         
     elif standard == "ThresholdGraph":
-        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                   multihead=True, threshold=True, alpha=alpha)
+        x_kept, weight = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=True, threshold=True, sparsity=sparsity, 
+                                   alpha=alpha)
             
     elif standard == "SingleHeadThresholdGraph":
-        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                   multihead=False, threshold=True, alpha=alpha)
+        x_kept, weight = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=False, threshold=True, sparsity=sparsity, 
+                                   alpha=alpha)
     
     elif standard == "SingleHeadGraph":
-        x_kept = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                   multihead=False, threshold=False, alpha=alpha)
+        x_kept, weight = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
+                                   multihead=False, threshold=False, sparsity=sparsity, 
+                                   alpha=alpha)
     
     else:
         print("Type\'", standard, "\' propagation not supported.")
         assert False
             
-    return x_kept, reconstruct_weight
+    return x_kept, reconstruct_weight, index_kept, index_elim, weight
 
 
 
@@ -282,7 +283,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attn_scales=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -290,6 +291,11 @@ class Attention(nn.Module):
         q = q * self.scale
 
         attn = (q @ k.transpose(-2, -1))
+        if attn_scales is not None:
+            pad_positive = torch.ones((B, self.num_heads, N, N), dtype=attn.dtype, device=attn.device)
+            pad_negative = -torch.ones((B, self.num_heads, N, N), dtype=attn.dtype, device=attn.device)
+            mask = torch.where(attn >= 0, pad_positive, pad_negative) 
+            attn = attn + attn_scales.log().reshape(B, 1, 1, N)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
          
@@ -302,9 +308,11 @@ class Attention(nn.Module):
 
 class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", num_prop=0, sparsity=1):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, 
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, 
+                 init_values=None, selection="None", propagation="None", num_prop=0, sparsity=1,
+                 alpha=0, attention_scale=False):
+                 
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -321,26 +329,32 @@ class GraphPropagationBlock(nn.Module):
         self.selection = selection
         self.num_prop = num_prop
         self.sparsity = sparsity
+        self.attention_scale = attention_scale
+        self.alpha = alpha
     
-    def forward(self, x, reconstruct_weights = None):
-        if reconstruct_weights is not None:
-            x = reconstruct(x, reconstruct_weights)
+    def forward(self, x, attn_scales=None):
+        if self.propagation == "None":
+            tmp, attn = self.attn(self.norm1(x), attn_scales)
+            x = x + self.drop_path(self.ls1(tmp))
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+            return x
         
-        tmp, attn = self.attn(self.norm1(x))
-        x = x + self.drop_path(self.ls1(tmp))
-        
-        if self.selection != "None" and self.num_prop > 0:
+        else:
+            tmp, attn = self.attn(self.norm1(x), attn_scales)
+            x = x + self.drop_path(self.ls1(tmp))
+            
             # select tokens and propagate
             token_rank = select(attn, standard=self.selection)
             index_cls = torch.zeros((x.shape[0], 1), device=token_rank.device, dtype=token_rank.dtype)
             index_kept = torch.cat((index_cls, token_rank[:, :-self.num_prop]+1), dim=1) # B, N-K
             index_elim = token_rank[:, -self.num_prop:]+1 # B, K
-            x, reconstruct_weight = propagate(x, attn, index_kept, index_elim, standard=self.propagation, sparsity=self.sparsity, alpha=0.5)
-        else:
-            reconstruct_weight = None
             
-        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        return x, reconstruct_weight
+            x, reconstruct_weight, index_kept, index_elim, weight = propagate(x, attn, index_kept, index_elim, 
+                                                                              standard=self.propagation, sparsity=self.sparsity,
+                                                                              alpha=self.alpha)
+            
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+            return x, reconstruct_weight, index_kept, index_elim, weight
 
 
 
@@ -378,7 +392,11 @@ class GraphPropagationTransformer(VisionTransformer):
             propagation="None",
             num_prop=0,
             sparsity=1,
-            start_layer=0):
+            alpha=0.1,
+            prop_start_layer=0,
+            reconstruct_layer=None,
+            attention_scale=False,
+            pretrained_cfg_overlay=None):
         
         super().__init__(
             img_size=img_size,
@@ -399,7 +417,13 @@ class GraphPropagationTransformer(VisionTransformer):
             drop_rate=drop_rate,
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate)
-            
+        
+        self.attention_scale = attention_scale
+        self.reconstruct_layer = reconstruct_layer
+        self.prop_start_layer = prop_start_layer
+        self.alpha = alpha
+        self.reconstruct = True if self.reconstruct_layer < depth and self.reconstruct_layer >= 0 else False
+        
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
         self.blocks = nn.Sequential(*[
             block_fn(
@@ -413,10 +437,12 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                selection=selection if i >= start_layer else "None",
-                propagation=propagation if i >= start_layer else "None",
-                num_prop=num_prop if i >= start_layer else 0,
-                sparsity=sparsity if i >= start_layer else 1
+                selection=selection if i >= prop_start_layer and i < reconstruct_layer else "None",
+                propagation=propagation if i >= prop_start_layer and i < reconstruct_layer else "None",
+                num_prop=num_prop if i >= prop_start_layer and i < reconstruct_layer else 0,
+                sparsity=sparsity if i >= prop_start_layer and i < reconstruct_layer else 1,
+                alpha=alpha if i >= prop_start_layer and i < reconstruct_layer else 0,
+                attention_scale=self.attention_scale
             )
             for i in range(depth)])
     
@@ -424,17 +450,65 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        reconstruct_weights = []
-        if self.grad_checkpointing and not torch.jit.is_scripting():
-            x = checkpoint_seq(self.blocks, x)
+        
+        if not self.reconstruct:
+            # No token reconstruction
+            if not self.attention_scale:
+                # No attention rescale
+                for i, blk in enumerate(self.blocks):
+                    # Vanilla block
+                    if i < self.prop_start_layer:
+                        x = blk(x)
+                    if i >= self.prop_start_layer:
+                        # feed forward
+                        x, reconstruct_weight, index_kept, index_elim, weight = blk(x)
+            else:
+                # Apply attention rescale for anti-oversmoothing
+                B, N, C = x.shape
+                attn_scales = torch.ones([B, N], device=x.device, dtype=x.dtype)
+                for i, blk in enumerate(self.blocks):
+                    # Vanilla block
+                    if i < self.prop_start_layer:
+                        x = blk(x)
+                        
+                    # Rescale the attention weights based on the propagation weights
+                    if i >= self.prop_start_layer:
+                        # feed forward
+                        x, reconstruct_weight, index_kept, index_elim, weight = blk(x, attn_scales)
+                        
+                        # update the attention scales
+                        attn_scales_kept = attn_scales.reshape(-1).index_select(dim=0, index=index_kept)
+                        attn_scales_kept = attn_scales_kept.reshape(B, index_kept.shape[0]//B)
+                        attn_scales_elim = attn_scales.reshape(-1).index_select(dim=0, index=index_elim)
+                        attn_scales_elim = attn_scales_elim.reshape(B, index_elim.shape[0]//B, 1)
+                        
+                        if len(weight.shape) > 3:
+                            weight = weight.mean(1)
+                        attn_scales = attn_scales_kept + (weight @ attn_scales_elim).squeeze()
+        
+        """
+        # Reconstruct 
         else:
+            reconstruct_weights = []
             for i, blk in enumerate(self.blocks):
-                if i <= len(self.blocks)-1:
-                    x, reconstruct_weight = blk(x)
+                # Blocks before the token reconstruction
+                if i < self.reconstruct_layer:
+                    x, attn, reconstruct_weight, index_kept, index_elim = blk(x)
                     if reconstruct_weight is not None:
-                        reconstruct_weights.append(reconstruct_weight)
-                else:
-                    x, reconstruct_weight = blk(x, reconstruct_weights)
+                            if len(reconstruct_weights) < 0:
+                                alter = reconstruct_weights[-1]
+                                B, H, num_elim, num_kept = alter.shape
+                                alter = alter.permute(1, 2, 0, 3) # H, N, B, N
+                                alter = alter.reshape(H, num_elim, B*num_kept) # H, N, B*N
+                                alter_kept = alter.index_select(dim=2, index=index_kept).reshape(H, num_elim, B, -1)
+                                alter_elim = alter.index_select(dim=2, index=index_elim).reshape(H, num_elim, B, -1) 
+                                alter = torch.cat((alter_kept, alter_elim), dim=-1).permute(2, 0, 1, 3)
+                                reconstruct_weights[-1] = alter
+                            reconstruct_weights.append(reconstruct_weight)
+                    else:
+                        x = reconstruct(x, reconstruct_weights)
+                        x, reconstruct_weight, index_kept, index_elim = blk(x)
+        """
         x = self.norm(x)
         return x
 

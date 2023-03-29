@@ -214,7 +214,10 @@ def get_args_parser():
     parser.add_argument('--propagation', default='ThresholdGraph')
     parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
-    parser.add_argument('--start_layer', type=int, default=0)
+    parser.add_argument('--alpha', type=float, default=0.1)
+    parser.add_argument('--prop_start_layer', type=int, default=0)
+    parser.add_argument('--reconstruct_layer', type=int, default=100)
+    parser.add_argument('--attention_scale', action='store_true', default=False)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -307,7 +310,10 @@ def main(args):
         propagation=args.propagation,
         num_prop=args.num_prop,
         sparsity=args.sparsity,
-        start_layer=args.start_layer
+        alpha=args.alpha,
+        prop_start_layer=args.prop_start_layer,
+        reconstruct_layer=args.reconstruct_layer,
+        attention_scale=args.attention_scale
     )
     
     if args.finetune:
@@ -467,6 +473,18 @@ def main(args):
         print('GMACs:', MACs * 1e-9)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        
+        """ delete """
+        with open("results", "a") as fp:
+            fp.write("Propagation: " + str(args.propagation) + " ")
+            fp.write("Selection: " + str(args.selection) + " ")
+            fp.write("Sparsity: " + str(args.sparsity) + " ")
+            fp.write("Alpha: " + str(args.alpha) + " ")
+            fp.write("Num Prop: " + str(args.num_prop) + " ")
+            fp.write("Attention Rescale: " + str(args.attention_scale) + " ")
+            fp.write('GMACs: ' + str(MACs*1e-9) + " ")
+            fp.write('Results: ' + str(round(test_stats['acc1'], 2)) + "\n\n")
+        """ delete """
         return
     
     MACs = get_macs(model)
