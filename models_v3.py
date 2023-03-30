@@ -23,40 +23,68 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, sparsity=0.2, reduction_num=0, alpha=0.5):
-        original_x = x
+    def forward(self, x, origin, sparsity=0.2, reduction_num=0):
         B, N, C = x.shape
+        H = self.num_heads
+        
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        H = self.num_heads
         q = q * self.scale
 
-        attn = (q @ k.transpose(-2, -1))
+        attn = (q @ k.transpose(-2, -1)) + math.log(1 + N/197)
         attn = attn.softmax(dim=-1) # B, H, N, N
+        
+        attn_sort, _ = torch.sort(attn.reshape(B, H*N*N), dim = -1, descending=True)
+        attn_threshold = attn_sort[:, int(H*N*N*sparsity)-1]
+        attn_threshold = attn_threshold.reshape(B, 1, 1, 1).expand(B, H, N, N)
+        pad = torch.zeros((B, H, N, N), device = attn.device) # B, H, (N-K), K
+        attn = torch.where(attn>=attn_threshold, attn, pad)
         
         attn_diag = attn.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1) # B, N-1
         token_rank = torch.argsort(attn_diag, dim=1, descending=True) # B, N-1
         
         num_kept = N - reduction_num
+        num_elim = reduction_num
+        
         index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype)
         index_kept = torch.cat((index_cls, token_rank[:, :-reduction_num]+1), dim=1) # B, N-K
         index_kept, _ = torch.sort(index_kept) # B, N-K
         index_B = torch.arange(B, dtype=index_kept.dtype, device=index_kept.device).reshape(B, 1).expand(B, num_kept).reshape(-1)*N
         index_kept = index_kept.reshape(B*num_kept) + index_B
         
-        weight = attn.transpose(0, 1) # H, B, N, N
-        weight = weight.reshape(H, B*N, N) # H, B*N, N
-        weight = weight.index_select(dim=1, index=index_kept) # H, B*(N-K), N
-        weight = weight.reshape(H, B, num_kept, N) # H, B, (N-K), N
-        weight = weight.transpose(0, 1) # B, H, (N-K), N
+        index_elim = token_rank[:, -reduction_num:]+1 # B, N-K
+        index_elim, _ = torch.sort(index_elim) # B, N-K
+        index_B = torch.arange(B, dtype=index_elim.dtype, device=index_elim.device).reshape(B, 1).expand(B, num_elim).reshape(-1)*N
+        index_elim = index_elim.reshape(B*num_elim) + index_B
         
-        weight = self.attn_drop(weight)
-        x = (weight @ v).transpose(1, 2).reshape(B, num_kept, C)
+        attn = attn.transpose(0, 1) # H, B, N, N
+        attn = attn.reshape(H, B*N, N) # H, B*N, N
+        attn_kept = attn.index_select(dim=1, index=index_kept) # H, B*(N-K), N
+        attn_kept = attn_kept.reshape(H, B, num_kept, N) # H, B, (N-K), N
+        attn_kept = attn_kept.transpose(0, 1) # B, H, (N-K), N
+        attn_elim = attn.index_select(dim=1, index=index_elim) # H, B*(N-K), N
+        attn_elim = attn_elim.reshape(H, B, num_elim, N) # H, B, (N-K), N
+        attn_elim = attn_elim.transpose(0, 1) # B, H, (N-K), N
+        
+        attn_kept_normed = 1 / attn_kept.norm(p=2, dim=-1, keepdim=True)
+        attn_elim_normed = 1 / attn_elim.norm(p=2, dim=-1, keepdim=True)
+        attn_denominator = attn_elim_normed @ attn_kept_normed.transpose(2, 3)
+        attn_similarity = attn_elim @ attn_kept.transpose(2, 3) * attn_denominator
+        attn_similarity = attn_similarity.mean(1)
+        attn_similarity, attn_similarity_rank = torch.sort(attn_similarity, dim=-1, descending=True) 
+        attn_similarity_rank = attn_similarity_rank[:, :, 0:1].reshape(B, 1, num_elim, 1).expand(B, H, num_elim, N) # B, K
+        # print(attn_similarity[:, :, 0:5])
+        attn_kept = attn_kept.scatter_reduce_(dim=2, index=attn_similarity_rank, src=attn_elim, reduce="mean")
+        
+        # attn_kept = self.attn_drop(attn_kept)
+        # x = (attn_kept @ v).transpose(1, 2).reshape(B, num_kept, C)
+        attn = self.attn_drop(attn)
+        x = (attn.reshape(H, B, N, N).transpose(0, 1) @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         
-        original_x = original_x.reshape(B*N, C).index_select(dim=0, index=index_kept).reshape(B, num_kept, C)
-        return x + original_x
+        # origin = origin.reshape(B*N, C).index_select(dim=0, index=index_kept).reshape(B, num_kept, C)
+        return x + origin
 
 
 class GraphPropagationBlock(nn.Module):
@@ -76,13 +104,11 @@ class GraphPropagationBlock(nn.Module):
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         
-        self.propagation = propagation
-        self.selection = selection
         self.reduction_num = reduction_num
         self.sparsity = sparsity
     
     def forward(self, x):
-        x = self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity, reduction_num=self.reduction_num, alpha=0.5)))
+        x = self.drop_path(self.ls1(self.attn(self.norm1(x), x, sparsity=self.sparsity, reduction_num=self.reduction_num)))
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x 
 
