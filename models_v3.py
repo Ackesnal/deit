@@ -5,7 +5,7 @@ import torch.nn as nn
 from functools import partial
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
-from timm.models.registry import register_model
+from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
 
@@ -28,26 +28,34 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        
+        H = self.num_heads
         q = q * self.scale
 
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1) # B, H, N, N
-        attn = self.attn_drop(attn)
         
-        # Find the top-K similar attentions
-        attn = attn.transpose(1,2) # B, N, H, N
-        attn = attn.reshape(B, N, self.num_heads*N) # B, N, H*N
-        attn_similarity = torch.cdist(attn, attn) # B, N, N
-        print(attn_similarity.shape)
-        assert False
+        attn_diag = attn.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1) # B, N-1
+        token_rank = torch.argsort(attn_diag, dim=1, descending=True) # B, N-1
         
+        num_kept = N - reduction_num
+        index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype)
+        index_kept = torch.cat((index_cls, token_rank[:, :-reduction_num]+1), dim=1) # B, N-K
+        index_kept, _ = torch.sort(index_kept) # B, N-K
+        index_B = torch.arange(B, dtype=index_kept.dtype, device=index_kept.device).reshape(B, 1).expand(B, num_kept).reshape(-1)*N
+        index_kept = index_kept.reshape(B*num_kept) + index_B
         
+        weight = attn.transpose(0, 1) # H, B, N, N
+        weight = weight.reshape(H, B*N, N) # H, B*N, N
+        weight = weight.index_select(dim=1, index=index_kept) # H, B*(N-K), N
+        weight = weight.reshape(H, B, num_kept, N) # H, B, (N-K), N
+        weight = weight.transpose(0, 1) # B, H, (N-K), N
         
-        
-        x = (attn @ v).transpose(1, 2).reshape(B, num_kept, C)
+        weight = self.attn_drop(weight)
+        x = (weight @ v).transpose(1, 2).reshape(B, num_kept, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+        
+        original_x = original_x.reshape(B*N, C).index_select(dim=0, index=index_kept).reshape(B, num_kept, C)
         return x + original_x
 
 
@@ -156,7 +164,7 @@ class GraphPropagationTransformer(VisionTransformer):
 
         
 @register_model
-def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)

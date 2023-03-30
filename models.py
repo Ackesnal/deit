@@ -5,7 +5,7 @@ import torch.nn as nn
 from functools import partial
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
-from timm.models.registry import register_model
+from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_
 
 
