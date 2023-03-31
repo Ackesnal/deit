@@ -37,9 +37,10 @@ class Attention(nn.Module):
         attn_sort, _ = torch.sort(attn.reshape(B, H*N*N), dim = -1, descending=True)
         attn_threshold = attn_sort[:, int(H*N*N*sparsity)-1]
         attn_threshold = attn_threshold.reshape(B, 1, 1, 1).expand(B, H, N, N)
+        # attn_threshold = torch.ones((B, H, N, N), device = attn.device) / N
         pad = torch.zeros((B, H, N, N), device = attn.device) # B, H, (N-K), K
         attn = torch.where(attn>=attn_threshold, attn, pad)
-        
+        """
         attn_diag = attn.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1) # B, N-1
         token_rank = torch.argsort(attn_diag, dim=1, descending=True) # B, N-1
         
@@ -75,11 +76,11 @@ class Attention(nn.Module):
         attn_similarity_rank = attn_similarity_rank[:, :, 0:1].reshape(B, 1, num_elim, 1).expand(B, H, num_elim, N) # B, K
         # print(attn_similarity[:, :, 0:5])
         attn_kept = attn_kept.scatter_reduce_(dim=2, index=attn_similarity_rank, src=attn_elim, reduce="mean")
-        
+        """
         # attn_kept = self.attn_drop(attn_kept)
         # x = (attn_kept @ v).transpose(1, 2).reshape(B, num_kept, C)
         attn = self.attn_drop(attn)
-        x = (attn.reshape(H, B, N, N).transpose(0, 1) @ v).transpose(1, 2).reshape(B, N, C)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         
@@ -195,4 +196,12 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
-            
+
+
+@register_model
+def graph_propagation_deit_base_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+    model = GraphPropagationTransformer(patch_size=16, embed_dim=768, depth=12,
+                                        num_heads=12, mlp_ratio=4, qkv_bias=True,
+                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+    
