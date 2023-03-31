@@ -28,7 +28,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     num_elim = x_elim.shape[1]
     B, H, N, _ = weight.shape
     
-    if alpha == 0:
+    if alpha == 0 or sparsity == 0:
         return x_kept, torch.zeros((B, H, num_kept, num_elim), device = weight.device)
     
     # Step 1: select weights that propagate from eliminated tokens to kept tokens.
@@ -44,19 +44,20 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     
     # Step 2: filter out insignificant edges, depending on the sparsity
     if threshold:
-        weight_rank, _ = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True) # B, H, (N-K)*K
-        weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)] # B, H, 1
-        weight_threshold = weight_threshold.reshape(B, H, 1, 1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
-        pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
-        weight = torch.where(weight>=weight_threshold, weight, pad) # B, H, (N-K), K
+        if multihead:
+            weight_rank, _ = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True) # B, H, (N-K)*K
+            weight_threshold = weight_rank[:, :, int(num_elim * num_kept * sparsity)-1] # B, H, 1
+            weight_threshold = weight_threshold.reshape(B, H, 1, 1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
+            pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
+            weight = torch.where(weight>=weight_threshold, weight, pad) # B, H, (N-K), K
         
-        """
-        weight_rank, _ = torch.sort(weight, dim=-2, descending=True) # B, H, (N-K)*K
-        weight_threshold = weight_rank[:, :, int(num_kept * sparsity), :] # B, H, K  
-        weight_threshold = weight_threshold.reshape(B, H, 1, num_elim).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
-        pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
-        weight = torch.where(weight>=weight_threshold, weight, pad) # B, H, (N-K), K
-        """
+        else：
+            weight = weight.mean(1)
+            weight_rank, _ = torch.sort(weight.reshape(B, -1), dim=-1, descending=True) # B, (N-K)*K
+            weight_threshold = weight_rank[:, int(num_elim * num_kept * sparsity)-1] # B, 1
+            weight_threshold = weight_threshold.reshape(B, 1, 1).expand(B, num_kept, num_elim) # B, (N-K), K
+            pad = torch.zeros((B, num_kept, num_elim), device = weight.device) # B, (N-K), K
+            weight = torch.where(weight>=weight_threshold, weight, pad) # B, (N-K), K
         
         """ 
         # test only
@@ -69,17 +70,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2) # B, H, (N-K), C//H
         x_prop = x_prop.transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
-        """
-        # sparse matrixm multiplication
-        weight = weight.reshape(B*H, num_kept, num_elim)
-        weight = weight.to_sparse_coo().type(torch.double)
-        x_elim = x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2).reshape(B*H, num_elim, C//H) # B, H, K, C//H
-        x_prop = torch.bmm(weight, x_elim.type(torch.double)) # B, H, (N-K), C//H
-        x_prop = x_prop.reshape(B, H, num_kept, C//H).transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
-        x_kept = x_kept + alpha * x_prop # B, (N-K), C
-        """
     else:
-        weight = weight.mean(1) # B, (N-K), K
         x_prop = weight @ x_elim # B, N-K, C
         x_kept = x_kept + alpha * x_prop # B, (N-K), C
     
@@ -283,7 +274,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, attn_scales=None):
+    def forward(self, x, token_scales=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -291,12 +282,10 @@ class Attention(nn.Module):
         q = q * self.scale
 
         attn = (q @ k.transpose(-2, -1))
-        if attn_scales is not None:
-            pad_positive = torch.ones((B, self.num_heads, N, N), dtype=attn.dtype, device=attn.device)
-            pad_negative = -torch.ones((B, self.num_heads, N, N), dtype=attn.dtype, device=attn.device)
-            mask = torch.where(attn >= 0, pad_positive, pad_negative) 
-            attn = attn + attn_scales.log().reshape(B, 1, 1, N)
+        if token_scales is not None:
+            attn = attn + token_scales.log().reshape(B, 1, 1, N)
         attn = attn.softmax(dim=-1)
+        
         attn = self.attn_drop(attn)
          
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -332,7 +321,7 @@ class GraphPropagationBlock(nn.Module):
         self.attention_scale = attention_scale
         self.alpha = alpha
     
-    def forward(self, x, attn_scales=None):
+    def forward(self, x, token_scales=None):
         if self.propagation == "None":
             tmp, attn = self.attn(self.norm1(x), attn_scales)
             x = x + self.drop_path(self.ls1(tmp))
@@ -340,7 +329,7 @@ class GraphPropagationBlock(nn.Module):
             return x
         
         else:
-            tmp, attn = self.attn(self.norm1(x), attn_scales)
+            tmp, attn = self.attn(self.norm1(x), token_scales)
             x = x + self.drop_path(self.ls1(tmp))
             
             # select tokens and propagate
@@ -465,7 +454,7 @@ class GraphPropagationTransformer(VisionTransformer):
             else:
                 # Apply attention rescale for anti-oversmoothing
                 B, N, C = x.shape
-                attn_scales = torch.ones([B, N], device=x.device, dtype=x.dtype)
+                token_scales = torch.ones([B, N], device=x.device, dtype=x.dtype)
                 for i, blk in enumerate(self.blocks):
                     # Vanilla block
                     if i < self.prop_start_layer:
@@ -474,17 +463,17 @@ class GraphPropagationTransformer(VisionTransformer):
                     # Rescale the attention weights based on the propagation weights
                     if i >= self.prop_start_layer:
                         # feed forward
-                        x, reconstruct_weight, index_kept, index_elim, weight = blk(x, attn_scales)
+                        x, reconstruct_weight, index_kept, index_elim, weight = blk(x, token_scales)
                         
-                        # update the attention scales
-                        attn_scales_kept = attn_scales.reshape(-1).index_select(dim=0, index=index_kept)
-                        attn_scales_kept = attn_scales_kept.reshape(B, index_kept.shape[0]//B)
-                        attn_scales_elim = attn_scales.reshape(-1).index_select(dim=0, index=index_elim)
-                        attn_scales_elim = attn_scales_elim.reshape(B, index_elim.shape[0]//B, 1)
+                        # update the tokens' scales
+                        token_scales_kept = token_scales.reshape(-1).index_select(dim=0, index=index_kept)
+                        token_scales_kept = token_scales_kept.reshape(B, index_kept.shape[0]//B)
+                        token_scales_elim = token_scales.reshape(-1).index_select(dim=0, index=index_elim)
+                        token_scales_elim = token_scales_elim.reshape(B, index_elim.shape[0]//B, 1)
                         
                         if len(weight.shape) > 3:
                             weight = weight.mean(1)
-                        attn_scales = attn_scales_kept + (weight @ attn_scales_elim).squeeze()
+                        token_scales = token_scales_kept + (weight @ token_scales_elim).squeeze() * self.alpha
         
         """
         # Reconstruct 
