@@ -40,7 +40,7 @@ class Mlp(nn.Module):
         self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
         self.drop2 = nn.Dropout(drop_probs[1])
 
-    def forward(self, x, residual=False):
+    def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop1(x)
@@ -52,7 +52,7 @@ class Mlp(nn.Module):
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., sparsity=1):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -62,10 +62,9 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.beta = 0.9
-        self.alpha = 0.1
+        self.sparsity = 1
 
-    def forward(self, x, sparsity=1, x0=None):
+    def forward(self, x):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -76,21 +75,16 @@ class Attention(nn.Module):
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         
-        if sparsity < 1:
+        if self.sparsity < 1:
             attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
             attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
             attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, N, N) # B, H, N, N
             pad = torch.zeros((B, self.num_heads, N, N), device = attn.device) # B, H, N, N
             attn = torch.where(attn>=attn_threshold, attn, pad) # B, H, N, N
          
-        if x0 is None:
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-        else:
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = x*(1-self.alpha) + x0*self.alpha
-            x = x*(1-self.beta) + self.proj_drop(self.proj(x))*self.beta
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
         return x
 
 
@@ -98,11 +92,12 @@ class Attention(nn.Module):
 class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None,
-                 selection="DiagAttn", propagation="None", num_prop=0, sparsity=1, identity=False):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None, sparsity=1, 
+                 identity=False, shortcut=False):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                              attn_drop=attn_drop, proj_drop=drop, sparsity=sparsity)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -114,14 +109,30 @@ class GraphPropagationBlock(nn.Module):
         
         self.sparsity = sparsity
         self.identity = identity
+        self.shortcut = shortcut
+        self.alpha = 0.9
     
-    def forward(self, x, x0=None):
-        if not self.identity:
-            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity)))
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+    def forward(self, x, shortcut=None):
+        if self.identity:
+            if self.shortcut:
+                assert shortcut is not None
+                x = self.norm1(x) * self.alpha + self.norm1(shortcut) * (1-self.alpha)
+                x = x + self.drop_path(self.ls1(self.attn(x)))
+                x = self.norm2(x) * self.alpha + self.norm2(shortcut) * (1-self.alpha)
+                x = x + self.drop_path(self.ls2(self.mlp(x)))
+            else:
+                x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
+                x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         else:
-            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), sparsity=self.sparsity, x0=x0)))
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+            if self.shortcut:
+                assert shortcut is not None
+                x = x * self.alpha + shortcut * (1-self.alpha)
+                x = self.drop_path(self.ls1(self.attn(self.norm1(x))))
+                x = x * self.alpha + shortcut * (1-self.alpha)
+                x = self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+            else:
+                x = self.drop_path(self.ls1(self.attn(self.norm1(x))))
+                x = self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
@@ -158,6 +169,7 @@ class GraphPropagationTransformer(VisionTransformer):
             block_fn=GraphPropagationBlock,
             sparsity=1,
             identity=False,
+            shortcut=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -194,29 +206,36 @@ class GraphPropagationTransformer(VisionTransformer):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 sparsity=sparsity,
-                identity=identity
+                identity=identity,
+                shortcut=shortcut
             )
             for i in range(depth)])
         
         self.identity = identity
+        self.shortcut = shortcut
     
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        if self.identity:
-            x0 = x
-        reconstruct_weights = []
+        if self.shortcut:
+            shortcut = x
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            if self.identity:
-                for blk in self.blocks:
-                    x = checkpoint.checkpoint(blk, x, x0)
+            if self.shortcut:
+                for i, blk in enumerate(self.blocks):
+                    x = checkpoint.checkpoint(blk, x, shortcut)
+                    if i % 3 == 2:
+                        w = i // 3 + 1
+                        shortcut = shortcut*w/(w+1) + x/(w+1)
             else:
                 x = checkpoint_seq(self.blocks, x)
         else:
-            if self.identity:
-                for blk in self.blocks:
-                    x = blk(x, x0)
+            if self.shortcut:
+                for i, blk in enumerate(self.blocks):
+                    x = blk(x, shortcut)
+                    if i % 3 == 2:
+                        w = i // 3 + 1
+                        shortcut = shortcut*w/(w+1) + x/(w+1)
             else:
                 x = self.blocks(x)
         x = self.norm(x)

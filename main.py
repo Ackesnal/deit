@@ -213,6 +213,7 @@ def get_args_parser():
     
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--identity', default=False, action='store_true',)
+    parser.add_argument('--shortcut', default=False, action='store_true',)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -302,7 +303,8 @@ def main(args):
         drop_block_rate=None,
         img_size=args.input_size,
         sparsity=args.sparsity,
-        identity=args.identity
+        identity=args.identity,
+        shortcut=args.shortcut
     )
     
     if args.finetune:
