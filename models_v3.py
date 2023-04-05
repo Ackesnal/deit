@@ -207,12 +207,18 @@ class GraphPropagationTransformer(VisionTransformer):
             for i, blk in enumerate(self.blocks):
                 x = checkpoint.checkpoint(blk, x)
                 if self.shortcut:
-                    shortcuts.append(x)
+                    if not self.global_pool or self.global_pool != 'avg':
+                        shortcuts.append(x[:,0:1,:])
+                    else:
+                        shortcuts.append(x)
         else:
             for i, blk in enumerate(self.blocks):
                 x = blk(x)
                 if self.shortcut:
-                    shortcuts.append(x)
+                    if not self.global_pool or self.global_pool != 'avg':
+                        shortcuts.append(x[:,0:1,:])
+                    else:
+                        shortcuts.append(x)
         if self.shortcut:
             x = torch.stack(shortcuts, dim=-1) # B, N, C, L
             x = torch.max(x, dim=-1)[0] # B, N, C, L
