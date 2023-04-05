@@ -110,29 +110,12 @@ class GraphPropagationBlock(nn.Module):
         self.sparsity = sparsity
         self.identity = identity
         self.shortcut = shortcut
-        self.alpha = 0.9
+        self.alpha = 0.5
+        self.beta = 0.9
     
     def forward(self, x, shortcut=None):
-        if self.identity:
-            if self.shortcut:
-                assert shortcut is not None
-                x = self.norm1(x) * self.alpha + self.norm1(shortcut) * (1-self.alpha)
-                x = x + self.drop_path(self.ls1(self.attn(x)))
-                x = self.norm2(x) * self.alpha + self.norm2(shortcut) * (1-self.alpha)
-                x = x + self.drop_path(self.ls2(self.mlp(x)))
-            else:
-                x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
-                x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        else:
-            if self.shortcut:
-                assert shortcut is not None
-                x = x * self.alpha + shortcut * (1-self.alpha)
-                x = self.drop_path(self.ls1(self.attn(self.norm1(x))))
-                x = x * self.alpha + shortcut * (1-self.alpha)
-                x = self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-            else:
-                x = self.drop_path(self.ls1(self.attn(self.norm1(x))))
-                x = self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
+        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
@@ -219,25 +202,20 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self._pos_embed(x)
         x = self.norm_pre(x)
         if self.shortcut:
-            shortcut = x
+            shortcuts = []
         if self.grad_checkpointing and not torch.jit.is_scripting():
-            if self.shortcut:
-                for i, blk in enumerate(self.blocks):
-                    x = checkpoint.checkpoint(blk, x, shortcut)
-                    if i % 3 == 2:
-                        w = i // 3 + 1
-                        shortcut = shortcut*w/(w+1) + x/(w+1)
-            else:
-                x = checkpoint_seq(self.blocks, x)
+            for i, blk in enumerate(self.blocks):
+                x = checkpoint.checkpoint(blk, x)
+                if self.shortcut:
+                    shortcuts.append(x)
         else:
-            if self.shortcut:
-                for i, blk in enumerate(self.blocks):
-                    x = blk(x, shortcut)
-                    if i % 3 == 2:
-                        w = i // 3 + 1
-                        shortcut = shortcut*w/(w+1) + x/(w+1)
-            else:
-                x = self.blocks(x)
+            for i, blk in enumerate(self.blocks):
+                x = blk(x)
+                if self.shortcut:
+                    shortcuts.append(x)
+        if self.shortcut:
+            x = torch.stack(shortcuts, dim=-1) # B, N, C, L
+            x = torch.max(x, dim=-1) # B, N, C, L
         x = self.norm(x)
         return x
 
