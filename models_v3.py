@@ -215,7 +215,7 @@ class GraphPropagationTransformer(VisionTransformer):
                     shortcuts.append(x)
         if self.shortcut:
             x = torch.stack(shortcuts, dim=-1) # B, N, C, L
-            x = torch.max(x, dim=-1) # B, N, C, L
+            x = torch.max(x, dim=-1)[0] # B, N, C, L
         x = self.norm(x)
         return x
 
