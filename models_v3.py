@@ -66,7 +66,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         assert False
         """
     
-    if token_scales is None:
+    if token_scales is not None:
         token_scales_kept = token_scales.reshape(-1).index_select(dim=0, index=index_kept).reshape(B, num_kept, 1)
         token_scales_elim = token_scales.reshape(-1).index_select(dim=0, index=index_elim).reshape(B, num_elim, 1)
         x_elim = x_elim * token_scales_elim
