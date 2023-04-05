@@ -92,8 +92,7 @@ class Attention(nn.Module):
 class GraphPropagationBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None, sparsity=1, 
-                 identity=False, shortcut=False):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None, sparsity=1):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, 
@@ -106,14 +105,8 @@ class GraphPropagationBlock(nn.Module):
         
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        
-        self.sparsity = sparsity
-        self.identity = identity
-        self.shortcut = shortcut
-        self.alpha = 0.5
-        self.beta = 0.9
     
-    def forward(self, x, shortcut=None):
+    def forward(self, x):
         x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x
@@ -151,8 +144,9 @@ class GraphPropagationTransformer(VisionTransformer):
             act_layer=nn.GELU,
             block_fn=GraphPropagationBlock,
             sparsity=1,
-            identity=False,
-            shortcut=False,
+            initial=False,
+            jumping=False,
+            combine="",
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -188,40 +182,44 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                sparsity=sparsity,
-                identity=identity,
-                shortcut=shortcut
+                sparsity=sparsity
             )
             for i in range(depth)])
         
-        self.identity = identity
-        self.shortcut = shortcut
+        self.initial = initial
+        self.jumping = jumping
+        self.combine = combine
     
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        if self.shortcut:
-            shortcuts = []
+        
+        if self.initial:
+            x_init = x
+        if self.jumping:
+            x_skip = []
+            
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
                 x = checkpoint.checkpoint(blk, x)
-                if self.shortcut:
-                    if not self.global_pool or self.global_pool != 'avg':
-                        shortcuts.append(x[:,0:1,:])
-                    else:
-                        shortcuts.append(x)
+                if self.initial:
+                    x = 0.8 * x + 0.2 * x_init
+                if self.jumping:
+                    x_skip.append(x)
         else:
             for i, blk in enumerate(self.blocks):
                 x = blk(x)
-                if self.shortcut:
-                    if not self.global_pool or self.global_pool != 'avg':
-                        shortcuts.append(x[:,0:1,:])
-                    else:
-                        shortcuts.append(x)
-        if self.shortcut:
-            x = torch.stack(shortcuts, dim=-1) # B, N, C, L
-            x = torch.max(x, dim=-1)[0] # B, N, C, L
+                if self.initial:
+                    x = 0.8 * x + 0.2 * x_init
+                if self.jumping:
+                    x_skip.append(x)
+                    
+        if self.jumping:
+            if self.combine == "max"：
+                x = torch.stack(x_skips, dim=-1) # B, N, C, L
+                x = torch.max(x, dim=-1)[0] # B, N, C, L
+        
         x = self.norm(x)
         return x
 
