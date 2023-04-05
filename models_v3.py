@@ -85,7 +85,7 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x, attn
 
 
 
@@ -107,9 +107,10 @@ class GraphPropagationBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
     
     def forward(self, x):
-        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
+        tmp, attn = self.attn(self.norm1(x))
+        x = x + self.drop_path(self.ls1(tmp))
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        return x
+        return x, attn
 
 
 
@@ -199,24 +200,35 @@ class GraphPropagationTransformer(VisionTransformer):
             x_init = x
         if self.jumping:
             x_skip = []
-            
+        
+        attn_prev = None
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
-                x = checkpoint.checkpoint(blk, x)
+                x, attn = checkpoint.checkpoint(blk, x)
                 if self.initial:
                     x = 0.8 * x + 0.2 * x_init
                 if self.jumping:
                     x_skip.append(x)
         else:
             for i, blk in enumerate(self.blocks):
-                x = blk(x)
+                x, attn = blk(x)
+                if attn_prev == None:
+                    attn_prev = attn
+                else:
+                    sim = (attn * attn_prev).sum(-1) / attn.norm(p=2, dim=-1) / attn_prev.norm(p=2,dim=-1)
+                    sim = sim.mean(dim=(0,2))
+                    with open("sim_result", "a") as fp:
+                        if i == 1:
+                            fp.write("\n")
+                        fp.write(str(sim[0].item()) + " " + str(sim[1].item()) + " " +str(sim[2].item()) + " " +str(sim[3].item()) + " " +str(sim[4].item()) + " " +str(sim[5].item()) + " " +"\n")
+                    attn_prev = attn
                 if self.initial:
                     x = 0.8 * x + 0.2 * x_init
                 if self.jumping:
                     x_skip.append(x)
                     
         if self.jumping:
-            if self.combine == "max"：
+            if self.combine == "max":
                 x = torch.stack(x_skips, dim=-1) # B, N, C, L
                 x = torch.max(x, dim=-1)[0] # B, N, C, L
         
