@@ -216,7 +216,7 @@ class GraphPropagationTransformer(VisionTransformer):
                     x_skip.append(x)
                     
         if self.jumping:
-            if self.combine == "max"：
+            if self.combine == "max":
                 x = torch.stack(x_skips, dim=-1) # B, N, C, L
                 x = torch.max(x, dim=-1)[0] # B, N, C, L
         
