@@ -189,6 +189,11 @@ class GraphPropagationTransformer(VisionTransformer):
         self.initial = initial
         self.jumping = jumping
         self.combine = combine
+        if self.combine == "attention":
+            self.out_attn_1 = nn.Linear(embed_dim, embed_dim/2)
+            self.out_act_1 = nn.GELU()
+            self.out_attn_2 = nn.Linear(embed_dim/2, embed_dim)
+            self.out_act_2 = nn.GELU()
     
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -217,8 +222,10 @@ class GraphPropagationTransformer(VisionTransformer):
                     
         if self.jumping:
             if self.combine == "max":
-                x = torch.stack(x_skips, dim=-1) # B, N, C, L
+                x = torch.stack(x_skip, dim=-1) # B, N, C, L
                 x = torch.max(x, dim=-1)[0] # B, N, C, L
+            if self.combine == "attention":
+                pass
         
         x = self.norm(x)
         return x
