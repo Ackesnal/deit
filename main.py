@@ -214,7 +214,7 @@ def get_args_parser():
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--initial', default=False, action='store_true')
     parser.add_argument('--jumping', default=False, action='store_true')
-    parser.add_argument('--combine', default="max", choices=["max", "attention", ""])
+    parser.add_argument('--combine', default="none", choices=["none", "max", "attention", ""])
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
