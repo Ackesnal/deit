@@ -107,7 +107,7 @@ class GraphPropagationBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
     
     def forward(self, x, x_init=None):
-        if x_init is None：
+        if x_init is None:
             x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
             x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         else:
