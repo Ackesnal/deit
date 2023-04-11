@@ -40,19 +40,17 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     # Step 2: filter out insignificant edges, depending on the sparsity
     if threshold:
         if multihead:
-            weight_rank, _ = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True) # B, (N-K)*K
-            weight_threshold = weight_rank[:, :, max(min(int(num_elim*num_kept*sparsity), num_elim*num_kept-1), 0)] # B, H, 1
-            weight_threshold = weight_threshold.reshape(B, H, 1, 1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
-            pad = torch.zeros((B, H, num_kept, num_elim), device = weight.device) # B, H, (N-K), K
+            weight_rank, _ = torch.sort(weight, dim=-2, descending=True) # B, H, (N-K), K
+            weight_threshold = weight_rank[:, :, max(min(int(num_kept*sparsity), num_kept-1), 0), :] # B, H, K
+            weight_threshold = weight_threshold.unsqueeze(2).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
             weight = torch.where(weight>=weight_threshold, weight, 0.0) # B, H, (N-K), K
             
         else:
-            weight = weight.mean(1)
-            weight_rank, _ = torch.sort(weight.reshape(B, -1), dim=-1, descending=True) # B, (N-K), K
-            weight_threshold = weight_rank[:, max(min(int(num_elim*num_kept*sparsity), num_elim*num_kept-1), 0)] # B, 1
-            weight_threshold = weight_threshold.reshape(B, 1, 1).expand(B, num_kept, num_elim) # B, (N-K), K
-            pad = torch.zeros((B, num_kept, num_elim), device = weight.device) # B, (N-K), K
-            weight = torch.where(weight>=weight_threshold, weight, pad) # B, (N-K), K
+            weight = weight.mean(1) # B, (N-K), K
+            weight_rank, _ = torch.sort(weight, dim=-2, descending=True) # B, (N-K), K
+            weight_threshold = weight_rank[:, max(min(int(num_kept*sparsity), num_kept-1), 0), :] # B, K
+            weight_threshold = weight_threshold.unsqueeze(1).expand(B, num_kept, num_elim) # B, (N-K), K
+            weight = torch.where(weight>=weight_threshold, weight, 0.0) # B, (N-K), K
             
         # test only
         # print(torch.count_nonzero(weight, dim=(-1,-2))/(num_elim*num_kept))
@@ -64,27 +62,27 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         token_scales_elim = token_scales.gather(dim=1, index=index_elim).unsqueeze(-1) # B, K, 1
         x_elim = x_elim * token_scales_elim
         x_kept = x_kept * token_scales_kept
+        if multihead:
+            token_scales_kept = token_scales_kept + weight.mean(1) @ token_scales_elim
+        else:
+            token_scales_kept = token_scales_kept + weight @ token_scales_elim
     
     # Step 4: propagate tokens
     if multihead:
         x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2) # B, H, (N-K), C//H
         x_prop = x_prop.transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
         if token_scales is not None:
-            token_scales_kept = token_scales_kept + weight.mean(1) @ token_scales_elim
             x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
         else:
             x_kept = x_kept + alpha * x_prop # B, (N-K), C
     else:
         x_prop = weight @ x_elim # B, N-K, C
         if token_scales is not None:
-            token_scales_kept = token_scales_kept + weight @ token_scales_elim
             x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
         else:
             x_kept = x_kept + alpha * x_prop # B, (N-K), C
     
-    # weight = torch.where(weight>0, 1.0, 0.0) # B, H, (N-K), K
-    # weight = weight / (weight.sum(-2, keepdim=True) + 1e-9) # B, H, (N-K), K
-    return x_kept, token_scales_kept.reshape(B, num_kept)
+    return x_kept, token_scales_kept.squeeze(-1)
 
 
 
@@ -314,27 +312,19 @@ class GraphPropagationBlock(nn.Module):
         self.alpha = alpha
     
     def forward(self, x, token_scales=None):
-        if self.propagation == "None" and self.selection == "None":
-            tmp, attn = self.attn(self.norm1(x), token_scales)
-            x = x + self.drop_path(self.ls1(tmp))
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-            return x, None, None, None
+        tmp, attn = self.attn(self.norm1(x), token_scales)
+        x = x + self.drop_path(self.ls1(tmp))
         
-        else:
-            tmp, attn = self.attn(self.norm1(x), token_scales)
-            x = x + self.drop_path(self.ls1(tmp))
-            
-            # select tokens and propagate
+        if self.selection != "None":
             index_kept, index_elim = select(attn, num_prop=self.num_prop, standard=self.selection) # B, N
-            
             x, token_scales = propagate(x, attn, index_kept, index_elim, 
                                         standard=self.propagation, sparsity=self.sparsity,
                                         alpha=self.alpha, token_scales=token_scales)
             
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-            return x, token_scales
-
-
+        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+        return x, token_scales
+        
+        
 
 class GraphPropagationTransformer(VisionTransformer):
     """
@@ -428,7 +418,17 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
+        # No token reconstruction
+        if self.attention_scale:
+            B, N, C = x.shape
+            token_scales = torch.ones([B, N], device=x.device, dtype=x.dtype)
+        else:
+            token_scales = None
         
+        for blk in self.blocks:
+            x, token_scales = blk(x, token_scales)
+        
+        """
         if not self.reconstruct:
             # No token reconstruction
             if not self.attention_scale:
@@ -451,7 +451,7 @@ class GraphPropagationTransformer(VisionTransformer):
                     if i >= self.prop_start_layer:
                         x, token_scales = blk(x, token_scales)
         
-        """
+        
         # Reconstruct 
         else:
             reconstruct_weights = []

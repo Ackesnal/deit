@@ -210,8 +210,8 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--selection', default='DiagAttn')
-    parser.add_argument('--propagation', default='ThresholdGraph')
+    parser.add_argument('--selection', default='None')
+    parser.add_argument('--propagation', default='None')
     parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--alpha', type=float, default=0.1)
