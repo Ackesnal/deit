@@ -5,7 +5,7 @@ import torch.nn as nn
 from functools import partial
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
-from timm.models.registry import register_model
+from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
 
@@ -84,7 +84,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     
     # weight = torch.where(weight>0, 1.0, 0.0) # B, H, (N-K), K
     # weight = weight / (weight.sum(-2, keepdim=True) + 1e-9) # B, H, (N-K), K
-    return x_kept, token_scales
+    return x_kept, token_scales_kept.reshape(B, num_kept)
 
 
 
@@ -137,7 +137,7 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
 
 
 
-def select(weight, standard, descending=True):
+def select(weight, standard, num_prop, descending=True):
     """
     standard: "PageRank", "ThresholdPageRank", "CLSAttn" or "Predictor"
     weight: could be attention map (B*H*N*N) or original feature map (B*N*C)
@@ -176,8 +176,8 @@ def select(weight, standard, descending=True):
         
     token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
     index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
-    index_kept = torch.cat((index_cls, token_rank[:, :-self.num_prop]+1), dim=1) # B, N-K
-    index_elim = token_rank[:, -self.num_prop:]+1 # B, K
+    index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
+    index_elim = token_rank[:, -num_prop:]+1 # B, K
     return index_kept, index_elim
 
 
@@ -325,7 +325,7 @@ class GraphPropagationBlock(nn.Module):
             x = x + self.drop_path(self.ls1(tmp))
             
             # select tokens and propagate
-            index_kept, index_elim = select(attn, standard=self.selection) # B, N
+            index_kept, index_elim = select(attn, num_prop=self.num_prop, standard=self.selection) # B, N
             
             x, token_scales = propagate(x, attn, index_kept, index_elim, 
                                         standard=self.propagation, sparsity=self.sparsity,
@@ -438,7 +438,7 @@ class GraphPropagationTransformer(VisionTransformer):
                     if i < self.prop_start_layer:
                         x = blk(x)
                     if i >= self.prop_start_layer:
-                        x, index_kept, index_elim, token_scales = blk(x)
+                        x, token_scales = blk(x)
             else:
                 # Apply attention rescale for anti-oversmoothing
                 B, N, C = x.shape
@@ -449,7 +449,7 @@ class GraphPropagationTransformer(VisionTransformer):
                         x = blk(x)
                     # Rescale the attention weights based on the propagation weights
                     if i >= self.prop_start_layer:
-                        x, index_kept, index_elim, token_scales = blk(x, token_scales)
+                        x, token_scales = blk(x, token_scales)
         
         """
         # Reconstruct 
