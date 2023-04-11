@@ -74,14 +74,14 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-        
+        """
         if self.sparsity < 1:
             attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
             attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
             attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, N, N) # B, H, N, N
             pad = torch.zeros((B, self.num_heads, N, N), device = attn.device) # B, H, N, N
             attn = torch.where(attn>=attn_threshold, attn, pad) # B, H, N, N
-         
+        """ 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -106,9 +106,13 @@ class GraphPropagationBlock(nn.Module):
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
     
-    def forward(self, x):
-        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
-        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+    def forward(self, x, x_init=None):
+        if x_init is None：
+            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+        else:
+            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x)*0.9+x_init*0.1)))
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x)*0.9+x_init*0.1)))
         return x
 
 
@@ -207,16 +211,12 @@ class GraphPropagationTransformer(VisionTransformer):
             
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
-                x = checkpoint.checkpoint(blk, x)
-                if self.initial:
-                    x = 0.8 * x + 0.2 * x_init
+                x = checkpoint.checkpoint(blk, x, x_init)
                 if self.jumping:
                     x_skip.append(x)
         else:
             for i, blk in enumerate(self.blocks):
-                x = blk(x)
-                if self.initial:
-                    x = 0.8 * x + 0.2 * x_init
+                x = blk(x, x_init)
                 if self.jumping:
                     x_skip.append(x)
                     
