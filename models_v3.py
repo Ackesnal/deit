@@ -89,7 +89,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
 
 def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, alpha=0.1, token_scales=None):
     B, N, C = x.shape
-    _, H, _, _ = weight.shape
+    H = weight.shape[1]
     num_kept = index_kept.shape[1]
     num_elim = index_elim.shape[1]
         
@@ -97,6 +97,7 @@ def propagate(x, weight, index_kept, index_elim, standard=None, sparsity=0.2, al
     index_elim, _ = torch.sort(index_elim) # B, K
     
     # divide tokens
+    x_cls = x[:, 0:1, :] # B, 1, C
     x_kept = x.gather(dim=1, index=index_kept.unsqueeze(-1).expand(B, num_kept, C)) # B, N-K, C
     x_elim = x.gather(dim=1, index=index_elim.unsqueeze(-1).expand(B, num_elim, C)) # B, K, C
     
@@ -174,8 +175,9 @@ def select(weight, standard, num_prop, descending=True):
         assert False
         
     token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
-    index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
-    index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
+    # index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
+    # index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
+    index_kept = token_rank[:, :-num_prop]+1 # B, N-K
     index_elim = token_rank[:, -num_prop:]+1 # B, K
     return index_kept, index_elim
 
@@ -312,28 +314,22 @@ class GraphPropagationBlock(nn.Module):
         self.attention_scale = attention_scale
         self.alpha = alpha
     
-    def forward(self, x, token_scales=None, past_attn=None):
+    def forward(self, x, graph, token_scales=None):
         tmp, attn = self.attn(self.norm1(x), token_scales)
         x = x + self.drop_path(self.ls1(tmp))
         
         if self.selection != "None":
             index_kept, index_elim = select(attn, num_prop=self.num_prop, standard=self.selection) # B, N
             
-            if past_attn is not None:
-                weight = attn * 0.5 + past_attn * 0.5
-                B, H, N, _ = weight.shape
-                num_kept = index_kept.shape[1]
-                past_attn = weight.gather(dim=2, index=index_kept.reshape(B,1,num_kept,1).expand(B,H,num_kept,N))
-                past_attn = past_attn.gather(dim=3, index=index_kept.reshape(B,1,1,num_kept).expand(B,H,num_kept,num_kept))
-            else:
-                weight = attn
+            graph = graph.unsqueeze(0).unsqueeze(1) * 0.5 + attn[:,:,1:,1:] * 0.5
+            weight = graph
             
             x, token_scales = propagate(x, weight, index_kept, index_elim, 
                                         standard=self.propagation, sparsity=self.sparsity,
                                         alpha=self.alpha, token_scales=token_scales)
             
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        return x, token_scales, past_attn
+        return x, graph, token_scales
         
         
 
@@ -401,6 +397,7 @@ class GraphPropagationTransformer(VisionTransformer):
         self.reconstruct_layer = reconstruct_layer
         self.prop_start_layer = prop_start_layer
         self.alpha = alpha
+        self.num_heads = num_heads
         self.reconstruct = True if self.reconstruct_layer < depth and self.reconstruct_layer >= 0 else False
         
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
@@ -435,9 +432,24 @@ class GraphPropagationTransformer(VisionTransformer):
         else:
             token_scales = None
         
-        past_attn = torch.ones([B, 6, N, N], device=x.device, dtype=x.dtype) / N
+        graph = torch.ones([B, self.num_heads, N, N], device=x.device, dtype=x.dtype) / N
+        # Create a range tensor of node indices
+        indices = torch.arange(N)
+        # Reshape the indices tensor to create a grid of row and column indices
+        row_indices = indices.view(-1, 1).expand(-1, N)
+        col_indices = indices.view(1, -1).expand(N, -1)
+        # Compute the adjacency matrix
+        row1, col1 = row_indices // int(math.sqrt(N)), row_indices % int(math.sqrt(N))
+        row2, col2 = col_indices // int(math.sqrt(N)), col_indices % int(math.sqrt(N))
+        graph = ((abs(row1 - row2) <= 1).float() * (abs(col1 - col2) <= 1).float())
+        # Normalize the graph
+        graph = graph - torch.eye(N)
+        graph = graph/(graph.sum(-1,keepdim=True))
+        # Put on GPU
+        graph = graph.to(x.device)
+        
         for blk in self.blocks:
-            x, token_scales, past_attn = blk(x, token_scales, past_attn)
+            x, graph, token_scales = blk(x, graph, token_scales)
         
         """
         if not self.reconstruct:
