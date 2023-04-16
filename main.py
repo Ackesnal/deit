@@ -464,7 +464,7 @@ def main(args):
         criterion = OrthogonalLoss(criterion, args.distillation_alpha)
     else:
         criterion = DistillationLoss(
-            criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau, args.diverse
+            criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
         )
 
     output_dir = Path(args.output_dir)
