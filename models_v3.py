@@ -214,12 +214,20 @@ class GraphPropagationTransformer(VisionTransformer):
         if self.initial:
             if self.grad_checkpointing and not torch.jit.is_scripting():
                 for i, blk in enumerate(self.blocks):
-                    x = checkpoint.checkpoint(blk, x, x_init)
+                    """type 1"""
+                    x = checkpoint.checkpoint(blk, x)
+                    x = x * 0.8 + x_init * 0.2
+                    """type 2"""
+                    # x = checkpoint.checkpoint(blk, x, x_init)
                     if self.jumping:
                         x_skip.append(x)
             else:
                 for i, blk in enumerate(self.blocks):
-                    x = blk(x, x_init)
+                    """type 1"""
+                    x = blk(x)
+                    x = x * 0.8 + x_init * 0.2
+                    """type 2"""
+                    # x = blk(x, x_init)
                     if self.jumping:
                         x_skip.append(x)
         else:
