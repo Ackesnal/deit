@@ -151,6 +151,7 @@ class GraphPropagationTransformer(VisionTransformer):
             initial=False,
             jumping=False,
             combine="",
+            diverse=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -193,6 +194,7 @@ class GraphPropagationTransformer(VisionTransformer):
         self.initial = initial
         self.jumping = jumping
         self.combine = combine
+        self.diverse = diverse
         if self.combine == "attention":
             self.out_attn_1 = nn.Linear(embed_dim, embed_dim/2)
             self.out_act_1 = nn.GELU()
@@ -208,17 +210,29 @@ class GraphPropagationTransformer(VisionTransformer):
             x_init = x
         if self.jumping:
             x_skip = []
-            
-        if self.grad_checkpointing and not torch.jit.is_scripting():
-            for i, blk in enumerate(self.blocks):
-                x = checkpoint.checkpoint(blk, x, x_init)
-                if self.jumping:
-                    x_skip.append(x)
+        
+        if self.initial:
+            if self.grad_checkpointing and not torch.jit.is_scripting():
+                for i, blk in enumerate(self.blocks):
+                    x = checkpoint.checkpoint(blk, x, x_init)
+                    if self.jumping:
+                        x_skip.append(x)
+            else:
+                for i, blk in enumerate(self.blocks):
+                    x = blk(x, x_init)
+                    if self.jumping:
+                        x_skip.append(x)
         else:
-            for i, blk in enumerate(self.blocks):
-                x = blk(x, x_init)
-                if self.jumping:
-                    x_skip.append(x)
+            if self.grad_checkpointing and not torch.jit.is_scripting():
+                for i, blk in enumerate(self.blocks):
+                    x = checkpoint.checkpoint(blk, x)
+                    if self.jumping:
+                        x_skip.append(x)
+            else:
+                for i, blk in enumerate(self.blocks):
+                    x = blk(x)
+                    if self.jumping:
+                        x_skip.append(x)
                     
         if self.jumping:
             if self.combine == "max":
@@ -238,8 +252,13 @@ class GraphPropagationTransformer(VisionTransformer):
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.forward_head(x)
-        return x
+        if self.diverse and self.training:
+            tokens = x[:,1:,:]
+            x = self.forward_head(x)
+            return x, tokens
+        else:
+            x = self.forward_head(x)
+            return x
         
         
         
