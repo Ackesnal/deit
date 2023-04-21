@@ -152,6 +152,7 @@ class GraphPropagationTransformer(VisionTransformer):
             jumping=False,
             combine="",
             diverse=False,
+            shuffle=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -195,12 +196,35 @@ class GraphPropagationTransformer(VisionTransformer):
         self.jumping = jumping
         self.combine = combine
         self.diverse = diverse
+        self.shuffle = shuffle
         if self.combine == "attention":
             self.out_attn_1 = nn.Linear(embed_dim, embed_dim/2)
             self.out_act_1 = nn.GELU()
             self.out_attn_2 = nn.Linear(embed_dim/2, embed_dim)
             self.out_act_2 = nn.GELU()
+        
+        if self.shuffle:
+            use_fc_norm = global_pool == 'avg' if fc_norm is None else fc_norm
+            self.patch_embed = embed_layer(
+                img_size=img_size,
+                patch_size=patch_size,
+                in_chans=in_chans,
+                embed_dim=embed_dim*2,
+                bias=not pre_norm,  # disable bias if pre-norm is used (e.g. CLIP)
+            )
+            num_patches = self.patch_embed.num_patches
     
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim*2)) if class_token else None
+            embed_len = num_patches if no_embed_class else num_patches + self.num_prefix_tokens
+            self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim*2) * .02)
+            self.pos_drop = nn.Dropout(p=drop_rate)
+            self.norm_pre = norm_layer(embed_dim*2) if pre_norm else nn.Identity()
+            self.norm = norm_layer(embed_dim*2) if not use_fc_norm else nn.Identity()
+        
+            # Classifier Head
+            self.fc_norm = norm_layer(embed_dim*2) if use_fc_norm else nn.Identity()
+            self.head = nn.Linear(self.embed_dim*2, num_classes) if num_classes > 0 else nn.Identity()
+            
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
@@ -211,36 +235,45 @@ class GraphPropagationTransformer(VisionTransformer):
         if self.jumping:
             x_skip = []
         
-        if self.initial:
-            if self.grad_checkpointing and not torch.jit.is_scripting():
-                for i, blk in enumerate(self.blocks):
-                    """type 1"""
-                    x = checkpoint.checkpoint(blk, x)
+        B, N, C = x.shape
+        print(B, N, C)
+        if self.grad_checkpointing and not torch.jit.is_scripting():
+            for i, blk in enumerate(self.blocks):
+                # Pre-layer processings
+                if self.shuffle:
+                    x_half = x[:,:,x.shape[2]//2:]
+                    x = x[:,:,:x.shape[2]//2]
+                    
+                # Transformer layer
+                x = checkpoint.checkpoint(blk)
+                
+                # Post-layer processings
+                if self.initial:
                     x = x * 0.8 + x_init * 0.2
-                    """type 2"""
-                    # x = checkpoint.checkpoint(blk, x, x_init)
-                    if self.jumping:
-                        x_skip.append(x)
-            else:
-                for i, blk in enumerate(self.blocks):
-                    """type 1"""
-                    x = blk(x)
-                    x = x * 0.8 + x_init * 0.2
-                    """type 2"""
-                    # x = blk(x, x_init)
-                    if self.jumping:
-                        x_skip.append(x)
+                if self.jumping:
+                    x_skip.append(x)
+                if self.shuffle:
+                    x = torch.cat((x, x_half), dim=-1)
+                    x = x.reshape(B, N, C//2, 2).transpose(-1,-2).reshape(B, N, C)
+                
         else:
-            if self.grad_checkpointing and not torch.jit.is_scripting():
-                for i, blk in enumerate(self.blocks):
-                    x = checkpoint.checkpoint(blk, x)
-                    if self.jumping:
-                        x_skip.append(x)
-            else:
-                for i, blk in enumerate(self.blocks):
-                    x = blk(x)
-                    if self.jumping:
-                        x_skip.append(x)
+            for i, blk in enumerate(self.blocks):
+                # Pre-layer processings
+                if self.shuffle:
+                    x_half = x[:,:,x.shape[2]//2:]
+                    x = x[:,:,:x.shape[2]//2]
+                    
+                # Transformer layer
+                x = blk(x)
+                
+                # Post-layer processings
+                if self.initial:
+                    x = x * 0.8 + x_init * 0.2
+                if self.jumping:
+                    x_skip.append(x)
+                if self.shuffle:
+                    x = torch.cat((x, x_half), dim=-1)
+                    x = x.reshape(B, N, 2, C//2).transpose(-1,-2).reshape(B, N, C)
                     
         if self.jumping:
             if self.combine == "max":

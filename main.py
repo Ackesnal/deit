@@ -216,6 +216,7 @@ def get_args_parser():
     parser.add_argument('--jumping', default=False, action='store_true')
     parser.add_argument('--combine', default="none", choices=["none", "max", "attention", ""])
     parser.add_argument('--diverse', default=False, action='store_true')
+    parser.add_argument('--shuffle', default=False, action='store_true')
     
     
     parser.add_argument('--test_speed', action='store_true')
@@ -309,7 +310,8 @@ def main(args):
         initial=args.initial,
         jumping=args.jumping,
         combine=args.combine,
-        diverse=args.diverse
+        diverse=args.diverse,
+        shuffle=args.shuffle
     )
     
     if args.finetune:
