@@ -236,7 +236,6 @@ class GraphPropagationTransformer(VisionTransformer):
             x_skip = []
         
         B, N, C = x.shape
-        print(B, N, C)
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
                 # Pre-layer processings
