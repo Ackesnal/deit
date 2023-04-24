@@ -26,7 +26,6 @@ from augment import new_data_aug_generator
 import models
 import models_v2
 import models_v3
-
 import utils
 from torchprofile import profile_macs
 
@@ -228,7 +227,6 @@ def get_args_parser():
 
 def main(args):
     utils.init_distributed_mode(args)
-
     print(args)
 
     if args.distillation_type != 'none' and args.finetune and not args.eval:
