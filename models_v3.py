@@ -53,7 +53,13 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         # print(torch.count_nonzero(weight, dim=(-1,-2))/(num_elim*num_kept))
         # assert False
         
-    weight = weight.to_sparse(layout=torch.sparse_coo)
+    index_nonzero = torch.nonzero(weight) # s*(N-K)*K, 3 => [Batch, Kept token, Prop token]
+    x_prop = x_elim[index_nonzero[:, 0], index_nonzero[:, 2]] # s*(N-K)*K, C
+    weight_prop = weight[index_nonzero[:, 0], index_nonzero[:, 1], index_nonzero[:, 2]].unsqueeze(-1) # s*(N-K)*K, 1
+    x_prop = x_prop * weight_prop # s*(N-K)*K, C
+    x_kept = x_kept.scatter_reduce(dim=1, index=index_nonzero[:,1].reshape(B, -1).unsqueeze(-1).expand(-1, -1, C), src=x_prop.reshape(B, -1, C), reduce="sum")
+    
+    
     
     # Step 3: update the token scale
     if token_scales is not None:
@@ -77,7 +83,8 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         else:
             x_kept = x_kept + alpha * x_prop # B, (N-K), C
     else:
-        x_prop = torch.bmm(weight, x_elim) # B, N-K, C
+        x_elim = x_elim.contiguous()
+        x_prop = torch.bmm(weight, x_elim).contiguous() # B, N-K, C
         if token_scales is not None:
             x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
         else:
