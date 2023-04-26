@@ -33,45 +33,40 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
     # Step 1: select weights that propagate from eliminated tokens to kept tokens.
     weight = weight.gather(dim=2, index=index_kept.reshape(B,1,num_kept,1).expand(B,H,num_kept,N)) # B, H, N-K, N
     weight = weight.gather(dim=3, index=index_elim.reshape(B,1,1,num_elim).expand(B,H,num_kept,num_elim)) # B, H, N-K, K
+    if not multihead:
+        weight = weight.mean(1)
     
-    # Step 2: filter out insignificant edges, depending on the sparsity
+    # Step 2: filter out insignificant edges, depending on the sparsity, and convert weight into sparse matrix
     if threshold:
         if multihead:
-            weight_rank, _ = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True) # B, H, (N-K)*K
-            weight_threshold = weight_rank[:, :, int(num_elim*num_kept*sparsity)] # B, H
-            weight_threshold = weight_threshold.reshape(B,H,1,1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
-            weight = torch.where(weight>=weight_threshold, weight, 0.0) # B, H, (N-K), K
-            
+            weight_rank  = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True)[0] # B, H, (N-K)*K
+            weight_sigma = weight_rank[:, :, int(num_elim*num_kept*sparsity)] # B, H
+            weight_sigma = weight_sigma.reshape(B,H,1,1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
         else:
-            weight = weight.mean(1) # B, (N-K), K
-            weight_rank, _ = torch.sort(weight.reshape(B, -1), dim=-1, descending=True) # B, (N-K), K
-            weight_threshold = weight_rank[:, int(num_elim*num_kept*sparsity)] # B
-            weight_threshold = weight_threshold.reshape(B,1,1).expand(B, num_kept, num_elim) # B, (N-K), K
-            weight = torch.where(weight>=weight_threshold, weight, 0.0) # B, (N-K), K
-            
+            weight_rank  = torch.sort(weight.reshape(B, -1), dim=-1, descending=True)[0] # B, (N-K), K
+            weight_sigma = weight_rank[:, int(num_elim*num_kept*sparsity)] # B
+            weight_sigma = weight_sigma.reshape(B,1,1).expand(B, num_kept, num_elim) # B, (N-K), K
+        
+        weight = torch.where(weight>=weight_sigma, weight, 0.0) # B, (N-K), K
+        # weight = weight.to_sparse()
+        
         # test only
         # print(torch.count_nonzero(weight, dim=(-1,-2))/(num_elim*num_kept))
         # assert False
-        
-    index_nonzero = torch.nonzero(weight) # s*(N-K)*K, 3 => [Batch, Kept token, Prop token]
-    x_prop = x_elim[index_nonzero[:, 0], index_nonzero[:, 2]] # s*(N-K)*K, C
-    weight_prop = weight[index_nonzero[:, 0], index_nonzero[:, 1], index_nonzero[:, 2]].unsqueeze(-1) # s*(N-K)*K, 1
-    x_prop = x_prop * weight_prop # s*(N-K)*K, C
-    x_kept = x_kept.scatter_reduce(dim=1, index=index_nonzero[:,1].reshape(B, -1).unsqueeze(-1).expand(-1, -1, C), src=x_prop.reshape(B, -1, C), reduce="sum")
-    
     
     
     # Step 3: update the token scale
     if token_scales is not None:
-        token_scales_kept = token_scales.gather(dim=1, index=index_kept).unsqueeze(-1).contiguous() # B, N-K, 1
-        token_scales_elim = token_scales.gather(dim=1, index=index_elim).unsqueeze(-1).contiguous() # B, K, 1
+        token_scales_kept = token_scales.gather(dim=1, index=index_kept).unsqueeze(-1) # B, N-K, 1
+        token_scales_elim = token_scales.gather(dim=1, index=index_elim).unsqueeze(-1) # B, K, 1
         x_elim = x_elim * token_scales_elim
         x_kept = x_kept * token_scales_kept
         if multihead:
-            token_scales_kept = token_scales_kept + weight.mean(1) @ token_scales_elim
+            token_scales_kept = token_scales_kept + torch.bmm(weight.mean(1), token_scales_elim)
         else:
-            a = torch.bmm(weight, token_scales_elim).contiguous()
-            token_scales_kept = token_scales_kept + a
+            #for i in range(B):
+            #    token_scales_kept[i] = token_scales_kept[i] + torch.spmm(weight[i], token_scales_elim[i])
+            token_scales_kept = token_scales_kept + weight @ token_scales_elim
         token_scales = token_scales_kept.squeeze(-1)
         
     # Step 4: propagate tokens
@@ -83,8 +78,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
         else:
             x_kept = x_kept + alpha * x_prop # B, (N-K), C
     else:
-        x_elim = x_elim.contiguous()
-        x_prop = torch.bmm(weight, x_elim).contiguous() # B, N-K, C
+        x_prop = weight @ x_elim # B, N-K, C
         if token_scales is not None:
             x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
         else:
