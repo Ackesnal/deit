@@ -467,21 +467,21 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
     if args.eval:
-        #MACs = get_macs(model)
-        #print('GMACs:', MACs * 1e-9)
+        MACs = get_macs(model)
+        print('GMACs:', MACs * 1e-9)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         
         """ delete """
         with open("results", "a") as fp:
-            fp.write("Propagation: " + str(args.propagation) + " ")
-            fp.write("Selection: " + str(args.selection) + " ")
-            fp.write("Sparsity: " + str(args.sparsity) + " ")
-            fp.write("Alpha: " + str(args.alpha) + " ")
-            fp.write("Num Prop: " + str(args.num_prop) + " ")
-            fp.write("Attention Rescale: " + str(args.attention_scale) + " ")
-            fp.write('GMACs: ' + str(MACs*1e-9) + " ")
-            fp.write('Results: ' + str(round(test_stats['acc1'], 2)) + "\n\n")
+            fp.write("| Num Prop: %2d " % args.num_prop)
+            fp.write('| GMACs: %1.3f ' % (MACs*1e-9))
+            fp.write('| Top-1 Acc: %2.2f ' % test_stats['acc1'])
+            fp.write("| Selection: %13s " % args.selection)
+            fp.write("| Propagation: %10s " % args.propagation)
+            fp.write("| Sparsity: %1.1f " % args.sparsity)
+            fp.write("| Alpha: %1.1f " % args.alpha)
+            fp.write("| Attention scale: %5s \n\n" % str(args.attention_scale))
         """ delete """
         return
     
