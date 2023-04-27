@@ -26,7 +26,6 @@ from augment import new_data_aug_generator
 import models
 import models_v2
 import models_v3
-
 import utils
 from torchprofile import profile_macs
 
@@ -210,10 +209,14 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--selection', default='DiagAttn')
-    parser.add_argument('--propagation', default='ThresholdGraph')
-    parser.add_argument('--num_prop', type=int, default=0)    
-    parser.add_argument('--sparsity', type=float, default=1)        
+    parser.add_argument('--selection', default='None')
+    parser.add_argument('--propagation', default='None')
+    parser.add_argument('--num_prop', type=int, default=0)
+    parser.add_argument('--sparsity', type=float, default=1)
+    parser.add_argument('--alpha', type=float, default=0.1)
+    parser.add_argument('--prop_start_layer', type=int, default=0)
+    parser.add_argument('--reconstruct_layer', type=int, default=100)
+    parser.add_argument('--attention_scale', action='store_true', default=False)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -224,7 +227,6 @@ def get_args_parser():
 
 def main(args):
     utils.init_distributed_mode(args)
-
     print(args)
 
     if args.distillation_type != 'none' and args.finetune and not args.eval:
@@ -305,7 +307,11 @@ def main(args):
         selection=args.selection,
         propagation=args.propagation,
         num_prop=args.num_prop,
-        sparsity=args.sparsity
+        sparsity=args.sparsity,
+        alpha=args.alpha,
+        prop_start_layer=args.prop_start_layer,
+        reconstruct_layer=args.reconstruct_layer,
+        attention_scale=args.attention_scale
     )
     
     if args.finetune:
@@ -461,13 +467,26 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
     if args.eval:
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
+        #MACs = get_macs(model)
+        #print('GMACs:', MACs * 1e-9)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        
+        """ delete """
+        with open("results", "a") as fp:
+            fp.write("Propagation: " + str(args.propagation) + " ")
+            fp.write("Selection: " + str(args.selection) + " ")
+            fp.write("Sparsity: " + str(args.sparsity) + " ")
+            fp.write("Alpha: " + str(args.alpha) + " ")
+            fp.write("Num Prop: " + str(args.num_prop) + " ")
+            fp.write("Attention Rescale: " + str(args.attention_scale) + " ")
+            fp.write('GMACs: ' + str(MACs*1e-9) + " ")
+            fp.write('Results: ' + str(round(test_stats['acc1'], 2)) + "\n\n")
+        """ delete """
         return
     
-    
+    MACs = get_macs(model)
+    print('Model GMACs:', MACs * 1e-9)
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
