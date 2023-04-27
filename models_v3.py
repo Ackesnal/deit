@@ -8,6 +8,8 @@ from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
+import timm
+import tome
 
 
 def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
@@ -48,26 +50,23 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
             weight_sigma = weight_sigma.reshape(B,1,1).expand(B, num_kept, num_elim) # B, (N-K), K
         
         weight = torch.where(weight>=weight_sigma, weight, 0.0) # B, (N-K), K
-        # weight = weight.to_sparse()
         
         # test only
         # print(torch.count_nonzero(weight, dim=(-1,-2))/(num_elim*num_kept))
         # assert False
     
-    
     # Step 3: update the token scale
     if token_scales is not None:
         token_scales_kept = token_scales.gather(dim=1, index=index_kept).unsqueeze(-1) # B, N-K, 1
         token_scales_elim = token_scales.gather(dim=1, index=index_elim).unsqueeze(-1) # B, K, 1
+        token_scales_cls = token_scales[:, 0:1]
         x_elim = x_elim * token_scales_elim
         x_kept = x_kept * token_scales_kept
         if multihead:
-            token_scales_kept = token_scales_kept + torch.bmm(weight.mean(1), token_scales_elim)
+            token_scales_kept = token_scales_kept + weight.mean(1) @ token_scales_elim
         else:
-            #for i in range(B):
-            #    token_scales_kept[i] = token_scales_kept[i] + torch.spmm(weight[i], token_scales_elim[i])
             token_scales_kept = token_scales_kept + weight @ token_scales_elim
-        token_scales = token_scales_kept.squeeze(-1)
+        token_scales = torch.cat((token_scales_cls, token_scales_kept.squeeze(-1)), dim=1)
         
     # Step 4: propagate tokens
     if multihead:
@@ -83,6 +82,7 @@ def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
             x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
         else:
             x_kept = x_kept + alpha * x_prop # B, (N-K), C
+    
     return x_kept, token_scales
 
 
@@ -92,13 +92,14 @@ def propagate(x, weight, index_kept, index_elim, standard="None", sparsity=0.2, 
     _, H, _, _ = weight.shape
     num_kept = index_kept.shape[1]
     num_elim = index_elim.shape[1]
-        
-    index_kept, _ = torch.sort(index_kept) # B, N-K
-    index_elim, _ = torch.sort(index_elim) # B, K
+    
+    # index_kept, _ = torch.sort(index_kept) # B, N-K
+    # index_elim, _ = torch.sort(index_elim) # B, K
     
     # divide tokens
     x_kept = x.gather(dim=1, index=index_kept.unsqueeze(-1).expand(B, num_kept, C)) # B, N-K, C
     x_elim = x.gather(dim=1, index=index_elim.unsqueeze(-1).expand(B, num_elim, C)) # B, K, C
+    x_cls = x[:, 0:1] # B, 1, C
     
     if standard == "None" or sparsity == 0:
         # No further propagation
@@ -131,8 +132,9 @@ def propagate(x, weight, index_kept, index_elim, standard="None", sparsity=0.2, 
     else:
         print("Type\'", standard, "\' propagation not supported.")
         assert False
-            
-    return x_kept, token_scales
+    
+    x = torch.cat((x_cls, x_kept), dim=1)
+    return x, token_scales
 
 
 
@@ -161,7 +163,8 @@ def select(weight, standard, num_prop, descending=True):
         token_rank = weight[:,:,:,1:].sum(-2).max(1)[0] # B, N-1
             
     elif standard == "DiagAttnMean":
-        token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1)
+        # token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1)
+        token_rank = torch.diagonal(weight, dim1=-2, dim2=-1)[:,:,1:].mean(1)
         
     elif standard == "DiagAttnMax":
         token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].max(1)[0]
@@ -174,9 +177,9 @@ def select(weight, standard, num_prop, descending=True):
         assert False
         
     token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
-    index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
-    index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
-    #index_kept = token_rank[:, :-num_prop]+1 # B, N-K
+    # index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
+    # index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
+    index_kept = token_rank[:, :-num_prop]+1 # B, N-K
     index_elim = token_rank[:, -num_prop:]+1 # B, K
     return index_kept, index_elim
             
@@ -205,9 +208,12 @@ class Attention(nn.Module):
         
         if token_scales is not None:
             attn = attn + token_scales.log().reshape(B, 1, 1, N)
-            
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
+        
+        attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
+        attn_sigma = attn_rank[:,:,int(N*N*0.75)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
+        attn = torch.where(attn>=attn_sigma, attn, 0.0)
          
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -380,4 +386,11 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+@register_model
+def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+    model = timm.create_model("deit_small_patch16_224", pretrained=True)
+    tome.patch.timm(model)
+    model.r = 8
     return model

@@ -102,8 +102,6 @@ def deit_small_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg
             map_location="cpu", check_hash=True
         )
         model.load_state_dict(checkpoint["model"])
-    tome.patch.timm(model)
-    model.r = 8
     return model
 
 
