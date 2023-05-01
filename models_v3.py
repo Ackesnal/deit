@@ -18,9 +18,10 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
     ================================================
     Args:
         - x: Tensor([B, N, C]): the feature map of N tokens, including the [CLS] token.
-        - weight: Tensor([B, N-1, N-1]): the weight of each token propagated to the other tokens, excluding the [CLS] token.
-                                         weight could be a pre-defined graph of the current feature map (by default) 
-                                         or the attention map (need to manually modify the Block Module).
+        - weight: Tensor([B, N-1, N-1]): the weight of each token propagated to the other tokens, 
+                                         excluding the [CLS] token. weight could be a pre-defined 
+                                         graph of the current feature map (by default) or the
+                                         attention map (need to manually modify the Block Module).
         - index_kept: Tensor([B, N-1-num_prop]): the index of kept image tokens in the feature map X
         - index_prop: Tensor([B, num_prop]): the index of propagated image tokens in the feature map X
         - standard: str: the method applied to propagate the tokens
@@ -58,21 +59,10 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
         Calculate the mean of all the propagated tokens,
         and concatenate the result token back to kept tokens.
         """
-        if token_scales is not None:
-            # weighted average
-            x_prop = x_prop * token_scales_prop.unsqueeze(-1) # B, num_prop, C
-            x_prop = x_prop.sum(1, keepdim=True) # B, 1, C
-            token_scales_prop = token_scales_prop.sum(1, keepdim=True) # B, 1
-            x_prop = x_prop / token_scales_prop.unsqueeze(-1) # B, 1, C
-            
-            # Concatenate the average token and its scale
-            x_kept = torch.cat((x_kept, x_prop), dim=1) # B, N-num_prop, C
-            token_scales_kept = torch.cat((token_scales_kept, token_scales_prop), dim=1) # B, N-num_prop
-        else:
-            # naive average
-            x_prop = x_prop.mean(1, keepdim=True) # B, 1, C
-            # Concatenate the average token 
-            x_kept = torch.cat((x_kept, x_prop), dim=1) # B, N-num_prop, C
+        # naive average
+        x_prop = x_prop.mean(1, keepdim=True) # B, 1, C
+        # Concatenate the average token 
+        x_kept = torch.cat((x_kept, x_prop), dim=1) # B, N-num_prop, C
             
     elif standard == "GraphProp":
         """
@@ -86,35 +76,30 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
         index_prop = index_prop - 1 # since weights do not include the [CLS] token
         
         weight = weight.gather(dim=1, index=index_kept.unsqueeze(-1).expand(-1,-1,N-1)) # B, N-1-num_prop, N-1
-        weight_kept = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, num_prop
         weight_prop = weight.gather(dim=2, index=index_prop.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, num_prop
         weight = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, N-1-num_prop
         
-        # Step 3.2: normalize the propagation weights to ensure each propagated token is fully broadcast
-        weight_prop = weight_prop / (weight_prop.sum(-2, keepdim=True) + 1e-12)
-        
-        # Step 3.3: scale the tokens if token_scales is not None
-        if token_scales is not None:
-            x_kept = x_kept * token_scales_kept.unsqueeze(-1) # B, N-1-num_prop, C
-            x_prop = x_prop * token_scales_prop.unsqueeze(-1) # B, num_prop, C
+        # Step 3.2: normalize the propagation weights to ensure each propagated token is evenly broadcast
+        # weight_prop = weight_prop / (weight_prop.sum(-2, keepdim=True) + 1e-12)
             
-        # Step 3.4: generate the broadcast message and propagate the message to corresponding kept tokens
+        # Step 3.3: generate the broadcast message and propagate the message to corresponding kept tokens
         x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
         x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
         
-        # Step 3.5: re-scale the tokens if token_scales is not None
+        # Step 3.4: calculate the scale of each token if token_scales is not None
         if token_scales is not None:
+            token_scales_cls = token_scales[:, 0:1] # B, 1
+            token_scales = token_scales[:, 1:]
+            token_scales_kept = token_scales.gather(dim=1, index=index_kept) # B, N-1-num_prop
+            token_scales_prop = token_scales.gather(dim=1, index=index_prop) # B, num_prop
             token_scales_prop = weight_prop @ token_scales_prop.unsqueeze(-1) # B, N-1-num_prop, 1
-            token_scales_kept = token_scales_kept + alpha * token_scales_prop.squeeze(-1) # B, N-1-num_prop
-            x_kept = x_kept / token_scales_kept.unsqueeze(-1) # B, N-1-num_prop, C
-            
+            token_scales = token_scales_kept + alpha * token_scales_prop.squeeze(-1) # B, N-1-num_prop
+            token_scales = torch.cat((token_scales_cls, token_scales), dim=1) # B, N-num_prop
     else:
         assert False, "Propagation method \'%f\' has not been supported yet." % standard
     
     # Step 4： concatenate the [CLS] token and generate returned value
     x = torch.cat((x_cls, x_kept), dim=1) # B, N-num_prop, C
-    if token_scales is not None:
-        token_scales = torch.cat((token_scales_cls, token_scales_kept), dim=1) # B, N-num_prop
     return x, weight, token_scales
 
 
@@ -219,9 +204,14 @@ class Attention(nn.Module):
         attn = self.attn_drop(attn)
         
         if self.sparsity < 1:
-            attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
-            attn_sigma = attn_rank[:,:,int(N*N*self.sparsity)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
-            attn = torch.where(attn>=attn_sigma, attn, 0.0)
+            # fast implementation 
+            k = int(N*N*(1-self.sparsity))
+            threshold = torch.kthvalue(attn.reshape(B,self.num_heads, -1), k, dim=-1, keepdim=True)[0].unsqueeze(-1) # B,H,1,1
+            attn[attn<threshold] = 0.0
+            
+            # attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
+            # attn_sigma = attn_rank[:,:,int(N*N*self.sparsity)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
+            # attn = torch.where(attn>=attn_sigma, attn, 0.0)
         
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -235,7 +225,7 @@ class GraphPropagationBlock(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, 
                  drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, 
                  init_values=None, selection="None", propagation="None", num_prop=0, sparsity=1,
-                 alpha=0, token_scale=False):
+                 alpha=0):
                  
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -254,7 +244,6 @@ class GraphPropagationBlock(nn.Module):
         self.selection = selection
         self.num_prop = num_prop
         self.sparsity = sparsity
-        self.token_scale = token_scale
         self.alpha = alpha
     
     def forward(self, x, weight, token_scales=None):
@@ -307,8 +296,8 @@ class GraphPropagationTransformer(VisionTransformer):
             sparsity=1,
             alpha=0.1,
             prop_start_layer=0,
-            reconstruct_layer=None,
             token_scale=False,
+            graph_type="None",
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -332,11 +321,9 @@ class GraphPropagationTransformer(VisionTransformer):
             drop_path_rate=drop_path_rate)
         
         self.token_scale = token_scale
-        self.reconstruct_layer = reconstruct_layer
         self.prop_start_layer = prop_start_layer
         self.alpha = alpha
-        self.num_heads = num_heads
-        self.reconstruct = True if self.reconstruct_layer < depth and self.reconstruct_layer >= 0 else False
+        self.graph_type = graph_type
         
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
         self.blocks = nn.Sequential(*[
@@ -351,17 +338,22 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                selection=selection if i >= prop_start_layer and i < reconstruct_layer else "None",
-                propagation=propagation if i >= prop_start_layer and i < reconstruct_layer else "None",
-                num_prop=num_prop if i >= prop_start_layer and i < reconstruct_layer else 0,
-                sparsity=sparsity if i >= prop_start_layer and i < reconstruct_layer else 1,
-                alpha=alpha if i >= prop_start_layer and i < reconstruct_layer else 0,
-                token_scale=self.token_scale
+                selection=selection if i >= prop_start_layer else "None",
+                propagation=propagation if i >= prop_start_layer else "None",
+                num_prop=num_prop if i >= prop_start_layer else 0,
+                sparsity=sparsity,
+                alpha=alpha
             )
             for i in range(depth)])
         
-        if propagation == "GraphProp":
-            N = (img_size // patch_size)**2
+        # First check the graph type is suitable for the propagation method
+        if propagation == "GraphProp" and self.graph_type not in ["Spatial", "Semantic", "Mixed"]:
+            self.graph_type = "Spatial"
+        elif propagation != "GraphProp":
+            self.graph_type = "None"
+            
+        N = (img_size // patch_size)**2
+        if self.graph_type in ["Spatial", "Mixed"]:
             # Create a range tensor of node indices
             indices = torch.arange(N)
             # Reshape the indices tensor to create a grid of row and column indices
@@ -383,23 +375,39 @@ class GraphPropagationTransformer(VisionTransformer):
         x = self.norm_pre(x)
         B, N, C = x.shape
         
-        spatial_graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1).to(x.device)
+        if self.graph_type in ["Semantic", "Mixed"]:
+            # Generate the semantic graph w.r.t. the cosine similarity between tokens
+            # Compute cosine similarity
+            x_normed = x[:, 1:] / x[:, 1:].norm(dim=-1, keepdim=True)
+            x_cossim = x_normed @ x_normed.transpose(-1, -2)
+            
+            # Generate the graph
+            threshold = torch.kthvalue(x_cossim, N-5, dim=-1, keepdim=True)[0] # B,H,1,1
+            semantic_graph = torch.where(x_cossim>=threshold, 1.0, 0.0)
+            semantic_graph = semantic_graph - torch.eye(N-1, device=semantic_graph.device).unsqueeze(0)
         
-        semantic_graph = x[:, 1:] @ x[:, 1:].transpose(-1, -2)
-        semantic_graph_rank = torch.sort(semantic_graph, dim=-1, descending=True)[0]
-        semantic_graph_sigma = semantic_graph_rank[:, :, 3].unsqueeze(-1).expand(-1, -1, N-1)
-        semantic_graph = torch.where(semantic_graph>=semantic_graph_sigma, 1, 0)
-        semantic_graph = semantic_graph - torch.eye(N-1, device=semantic_graph.device).unsqueeze(0)
-        
-        graph = torch.bitwise_or(semantic_graph.int(), spatial_graph.int()).float()
-        
-        # normalize
-        # degree = graph.sum(-1) # B, N
-        # degree = torch.diag_embed(degree**(-1/2))
-        # graph = degree @ graph @ degree
-        
-        token_scales = self.token_scales.unsqueeze(0).expand(B,-1).to(x.device) if self.token_scale else None
-        
+        if self.graph_type == "None":
+            graph = None
+        else:
+            if self.graph_type == "Spatial":
+                graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1).to(x.device)
+            elif self.graph_type == "Semantic":
+                graph = semantic_graph
+            elif self.graph_type == "Mixed":
+                # Integrate the spatial graph and semantic graph
+                spatial_graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1).to(x.device)
+                graph = torch.bitwise_or(semantic_graph.int(), spatial_graph.int()).float()
+            
+            # Symmetrically normalize the graph
+            degree = graph.sum(-1) # B, N
+            degree = torch.diag_embed(degree**(-1/2))
+            graph = degree @ graph @ degree
+            
+        if self.token_scale:
+            token_scales = self.token_scales.unsqueeze(0).expand(B,-1).to(x.device)
+        else:
+            token_scales = None
+            
         for blk in self.blocks:
             x, graph, token_scales = blk(x, graph, token_scales)
         

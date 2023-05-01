@@ -219,13 +219,15 @@ def get_args_parser():
     parser.add_argument('--propagation', default='None',
                         choices=['None', 'Mean', 'GraphProp'],
                         type=str)
+    # Types of graph
+    parser.add_argument('--graph_type', default='None', choices=['None', 'Spatial', 'Semantic', 'Mixed'], type=str)
     parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--alpha', type=float, default=0.1)
     parser.add_argument('--prop_start_layer', type=int, default=0)
-    parser.add_argument('--reconstruct_layer', type=int, default=100)
     parser.add_argument('--token_scale', action='store_true', default=False)
     
+    # speed test
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
     
@@ -318,8 +320,8 @@ def main(args):
         sparsity=args.sparsity,
         alpha=args.alpha,
         prop_start_layer=args.prop_start_layer,
-        reconstruct_layer=args.reconstruct_layer,
-        token_scale=args.token_scale
+        token_scale=args.token_scale,
+        graph_type=args.graph_type
     )
     
     if args.finetune:
@@ -482,14 +484,15 @@ def main(args):
         
         """ delete """
         with open("results", "a") as fp:
-            fp.write("Propagation: " + str(args.propagation) + " ")
-            fp.write("Selection: " + str(args.selection) + " ")
-            fp.write("Sparsity: " + str(args.sparsity) + " ")
-            fp.write("Alpha: " + str(args.alpha) + " ")
-            fp.write("Num Prop: " + str(args.num_prop) + " ")
-            fp.write("Token scale: " + str(args.token_scale) + " ")
-            fp.write('GMACs: ' + str(MACs*1e-9) + " ")
-            fp.write('Results: ' + str(round(test_stats['acc1'], 2)) + "\n\n")
+            fp.write("|  Num Prop: %2d  " % args.num_prop)
+            fp.write("|  GMACs: %1.3f  " % (MACs*1e-9))
+            fp.write("|  Top-1 Acc: %2.2f  " % test_stats['acc1'])
+            fp.write("|  Selection: %13s  " % args.selection)
+            fp.write("|  Propagation: %10s  " % args.propagation)
+            fp.write("|  Sparsity: %1.1f  " % args.sparsity)
+            fp.write("|  Alpha: %1.1f  " % args.alpha)
+            fp.write("|  Scale: %5s  " % str(args.token_scale))
+            fp.write("|  Graph: %7s  |\n\n" % str(args.graph_type))
         """ delete """
         return
     
