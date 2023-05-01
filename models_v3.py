@@ -8,167 +8,174 @@ from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
-import timm
-import tome
+from typing import Optional
 
 
-def graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                      multihead=True, threshold=True, sparsity=0.05, 
-                      alpha=0.1, token_scales=None):
+def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, index_prop: torch.Tensor, 
+              standard: str = "None", alpha: Optional[float] = 0, token_scales: Optional[torch.Tensor] = None):
     """
-    Perform graph propagation to combine the eliminated tokens into kept tokens
-    x_kept -> [B, N-K, C] : The input feature map
-    x_elim -> [B, K, C]
-    weight -> [B, H, N, N] : The graph edge weights
-    index_kept -> [B*(N-K)] : The index of the kept tokens
-    index_elim -> [B*K] : The index of the eliminated tokens
-    multihead : Whether propagate on multiple heads
-    threshold : Whether convert the dense-connected graph into sparse graph
-    sparsity : If threshold is True, how sparsity the graph should be
+    Propagate tokens based on the selection results.
+    ================================================
+    Args:
+        - x: Tensor([B, N, C]): the feature map of N tokens, including the [CLS] token.
+        - weight: Tensor([B, N-1, N-1]): the weight of each token propagated to the other tokens, excluding the [CLS] token.
+                                         weight could be a pre-defined graph of the current feature map (by default) 
+                                         or the attention map (need to manually modify the Block Module).
+        - index_kept: Tensor([B, N-1-num_prop]): the index of kept image tokens in the feature map X
+        - index_prop: Tensor([B, num_prop]): the index of propagated image tokens in the feature map X
+        - standard: str: the method applied to propagate the tokens
+        - alpha: float: the coefficient of propagated features
+        - token_scales: Tensor([B, N]): the scale of tokens, including the [CLS] token. None by default.
+                                        token_scales represents the scales of each token and sum up to N.
+    Return:
+        - x: Tensor([B, N-1-num_prop, C]): the feature map after propagation
+        - weight: Tensor([B, N-1-num_prop, N-1-num_prop]): the graph of feature map after propagation
+        - token_scales: Tensor([B, N-1-num_prop]): the scale of tokens after propagation
     """
     
-    B, num_kept, C = x_kept.shape
-    num_elim = x_elim.shape[1]
-    H = weight.shape[1]
-    N = weight.shape[2]
-    
-    # Step 1: select weights that propagate from eliminated tokens to kept tokens.
-    weight = weight.gather(dim=2, index=index_kept.reshape(B,1,num_kept,1).expand(B,H,num_kept,N)) # B, H, N-K, N
-    weight = weight.gather(dim=3, index=index_elim.reshape(B,1,1,num_elim).expand(B,H,num_kept,num_elim)) # B, H, N-K, K
-    if not multihead:
-        weight = weight.mean(1)
-    
-    # Step 2: filter out insignificant edges, depending on the sparsity, and convert weight into sparse matrix
-    if threshold:
-        if multihead:
-            weight_rank  = torch.sort(weight.reshape(B, H, -1), dim=-1, descending=True)[0] # B, H, (N-K)*K
-            weight_sigma = weight_rank[:, :, int(num_elim*num_kept*sparsity)] # B, H
-            weight_sigma = weight_sigma.reshape(B,H,1,1).expand(B, H, num_kept, num_elim) # B, H, (N-K), K
-        else:
-            weight_rank  = torch.sort(weight.reshape(B, -1), dim=-1, descending=True)[0] # B, (N-K), K
-            weight_sigma = weight_rank[:, int(num_elim*num_kept*sparsity)] # B
-            weight_sigma = weight_sigma.reshape(B,1,1).expand(B, num_kept, num_elim) # B, (N-K), K
-        
-        weight = torch.where(weight>=weight_sigma, weight, 0.0) # B, (N-K), K
-        
-        # test only
-        # print(torch.count_nonzero(weight, dim=(-1,-2))/(num_elim*num_kept))
-        # assert False
-    
-    # Step 3: update the token scale
-    if token_scales is not None:
-        token_scales_kept = token_scales.gather(dim=1, index=index_kept).unsqueeze(-1) # B, N-K, 1
-        token_scales_elim = token_scales.gather(dim=1, index=index_elim).unsqueeze(-1) # B, K, 1
-        token_scales_cls = token_scales[:, 0:1]
-        x_elim = x_elim * token_scales_elim
-        x_kept = x_kept * token_scales_kept
-        if multihead:
-            token_scales_kept = token_scales_kept + weight.mean(1) @ token_scales_elim
-        else:
-            token_scales_kept = token_scales_kept + weight @ token_scales_elim
-        token_scales = torch.cat((token_scales_cls, token_scales_kept.squeeze(-1)), dim=1)
-        
-    # Step 4: propagate tokens
-    if multihead:
-        x_prop = weight @ x_elim.reshape(B, num_elim, H, C//H).transpose(1, 2) # B, H, (N-K), C//H
-        x_prop = x_prop.transpose(1, 2).reshape(B, num_kept, C) # B, (N-K), C
-        if token_scales is not None:
-            x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
-        else:
-            x_kept = x_kept + alpha * x_prop # B, (N-K), C
-    else:
-        x_prop = weight @ x_elim # B, N-K, C
-        if token_scales is not None:
-            x_kept = (x_kept + x_prop) / token_scales_kept # B, (N-K), C
-        else:
-            x_kept = x_kept + alpha * x_prop # B, (N-K), C
-    
-    return x_kept, token_scales
-
-
-
-def propagate(x, weight, index_kept, index_elim, standard="None", sparsity=0.2, alpha=0.1, token_scales=None):
     B, N, C = x.shape
-    _, H, _, _ = weight.shape
-    num_kept = index_kept.shape[1]
-    num_elim = index_elim.shape[1]
     
-    # index_kept, _ = torch.sort(index_kept) # B, N-K
-    # index_elim, _ = torch.sort(index_elim) # B, K
-    
-    # divide tokens
-    x_kept = x.gather(dim=1, index=index_kept.unsqueeze(-1).expand(B, num_kept, C)) # B, N-K, C
-    x_elim = x.gather(dim=1, index=index_elim.unsqueeze(-1).expand(B, num_elim, C)) # B, K, C
+    # Step 1: divide tokens
     x_cls = x[:, 0:1] # B, 1, C
+    x_kept = x.gather(dim=1, index=index_kept.unsqueeze(-1).expand(-1,-1,C)) # B, N-1-num_prop, C
+    x_prop = x.gather(dim=1, index=index_prop.unsqueeze(-1).expand(-1,-1,C)) # B, num_prop, C
     
-    if standard == "None" or sparsity == 0:
-        # No further propagation
+    # Step 2: divide token_scales if it is not None
+    if token_scales is not None:
+        token_scales_cls = token_scales[:, 0:1] # B, 1
+        token_scales_kept = token_scales.gather(dim=1, index=index_kept) # B, N-1-num_prop
+        token_scales_prop = token_scales.gather(dim=1, index=index_prop) # B, num_prop
+    
+    # Step 3: propagate tokens
+    if standard == "None":
+        """
+        No further propagation
+        """
         pass
         
     elif standard == "Mean":
-        # Only add the average
-        x_kept = x_kept + alpha * x_elim.mean(1, keepdim=True)
+        """
+        Calculate the mean of all the propagated tokens,
+        and concatenate the result token back to kept tokens.
+        """
+        if token_scales is not None:
+            # weighted average
+            x_prop = x_prop * token_scales_prop.unsqueeze(-1) # B, num_prop, C
+            x_prop = x_prop.sum(1, keepdim=True) # B, 1, C
+            token_scales_prop = token_scales_prop.sum(1, keepdim=True) # B, 1
+            x_prop = x_prop / token_scales_prop.unsqueeze(-1) # B, 1, C
             
-    elif standard == "Graph":
-        x_kept, token_scales = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                                 multihead=True, threshold=False, sparsity=sparsity, 
-                                                 alpha=alpha, token_scales=token_scales)
+            # Concatenate the average token and its scale
+            x_kept = torch.cat((x_kept, x_prop), dim=1) # B, N-num_prop, C
+            token_scales_kept = torch.cat((token_scales_kept, token_scales_prop), dim=1) # B, N-num_prop
+        else:
+            # naive average
+            x_prop = x_prop.mean(1, keepdim=True) # B, 1, C
+            # Concatenate the average token 
+            x_kept = torch.cat((x_kept, x_prop), dim=1) # B, N-num_prop, C
+            
+    elif standard == "GraphProp":
+        """
+        Propagate all the propagated token to kept token
+        with respect to the weights and token scales.
+        """
+        assert weight is not None, "The graph weight is needed for graph propagation"
         
-    elif standard == "ThresholdGraph":
-        x_kept, token_scales = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                                 multihead=True, threshold=True, sparsity=sparsity, 
-                                                 alpha=alpha, token_scales=token_scales)
+        # Step 3.1: divide propagation weights.
+        index_kept = index_kept - 1 # since weights do not include the [CLS] token
+        index_prop = index_prop - 1 # since weights do not include the [CLS] token
+        
+        weight = weight.gather(dim=1, index=index_kept.unsqueeze(-1).expand(-1,-1,N-1)) # B, N-1-num_prop, N-1
+        weight_kept = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, num_prop
+        weight_prop = weight.gather(dim=2, index=index_prop.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, num_prop
+        weight = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, N-1-num_prop
+        
+        # Step 3.2: normalize the propagation weights to ensure each propagated token is fully broadcast
+        weight_prop = weight_prop / (weight_prop.sum(-2, keepdim=True) + 1e-12)
+        
+        # Step 3.3: scale the tokens if token_scales is not None
+        if token_scales is not None:
+            x_kept = x_kept * token_scales_kept.unsqueeze(-1) # B, N-1-num_prop, C
+            x_prop = x_prop * token_scales_prop.unsqueeze(-1) # B, num_prop, C
             
-    elif standard == "SingleHeadThresholdGraph":
-        x_kept, token_scales = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                                 multihead=False, threshold=True, sparsity=sparsity, 
-                                                 alpha=alpha, token_scales=token_scales)
-    
-    elif standard == "SingleHeadGraph":
-        x_kept, token_scales = graph_propagation(x_kept, x_elim, weight, index_kept, index_elim,
-                                                 multihead=False, threshold=False, sparsity=sparsity, 
-                                                 alpha=alpha, token_scales=token_scales)
-    
-    else:
-        print("Type\'", standard, "\' propagation not supported.")
-        assert False
-    
-    x = torch.cat((x_cls, x_kept), dim=1)
-    return x, token_scales
-
-
-
-def select(weight, standard, num_prop, descending=True):
-    """
-    standard: "PageRank", "ThresholdPageRank", "CLSAttn" or "Predictor"
-    weight: could be attention map (B*H*N*N) or original feature map (B*N*C)
-    """
-    if len(weight.shape) == 4:
-        # attention map
-        B, H, N, _ = weight.shape
-    else:
-        print("Select criterion without attention map hasn't been supported yet.")
-        assert False
+        # Step 3.4: generate the broadcast message and propagate the message to corresponding kept tokens
+        x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
+        x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
+        
+        # Step 3.5: re-scale the tokens if token_scales is not None
+        if token_scales is not None:
+            token_scales_prop = weight_prop @ token_scales_prop.unsqueeze(-1) # B, N-1-num_prop, 1
+            token_scales_kept = token_scales_kept + alpha * token_scales_prop.squeeze(-1) # B, N-1-num_prop
+            x_kept = x_kept / token_scales_kept.unsqueeze(-1) # B, N-1-num_prop, C
             
-    if standard == "CLSAttn":
-        token_rank = weight[:,:,0,1:].mean(1) # B, N-1
+    else:
+        assert False, "Propagation method \'%f\' has not been supported yet." % standard
+    
+    # Step 4： concatenate the [CLS] token and generate returned value
+    x = torch.cat((x_cls, x_kept), dim=1) # B, N-num_prop, C
+    if token_scales is not None:
+        token_scales = torch.cat((token_scales_cls, token_scales_kept), dim=1) # B, N-num_prop
+    return x, weight, token_scales
+
+
+
+def select(weight: torch.Tensor, standard: str = "None", num_prop: int = 0):
+    """
+    Select image tokens to be propagated. The [CLS] token will be ignored. 
+    =============================
+    Args:
+        - weight: Tensor([B, H, N, N]): only support the attention map of tokens in the current layer
+        - standard: str: the method applied to select the tokens
+        - num_prop: int: the number of tokens to be propagated
+    Return:
+        - index_kept: Tensor([B, N-1-num_prop]): the index of kept image tokens in the original feature map X
+        - index_prop: Tensor([B, num_prop]): the index of propagated image tokens in the original feature map X
+    """
+    
+    assert len(weight.shape) == 4, "Selection methods on tensors other than the attention map haven't been supported yet."
+    B, H, N1, N2 = weight.shape
+    assert N1 == N2, "Selection methods on tensors other than the attention map haven't been supported yet."
+    N = N1
+    assert num_prop >= 0, "The number of propagated/pruned tokens must be non-negative."
+            
+    if standard == "CLSAttnMean":
+        token_rank = weight[:,:,0,1:].mean(1)
         
     elif standard == "CLSAttnMax":
-        token_rank = weight[:,:,0,1:].max(1)[0] # B, N-1
+        token_rank = weight[:,:,0,1:].max(1)[0]
             
     elif standard == "IMGAttnMean":
-        token_rank = weight[:,:,:,1:].sum(-2).mean(1) # B, N-1
+        token_rank = weight[:,:,:,1:].sum(-2).mean(1)
     
     elif standard == "IMGAttnMax":
-        token_rank = weight[:,:,:,1:].sum(-2).max(1)[0] # B, N-1
+        token_rank = weight[:,:,:,1:].sum(-2).max(1)[0]
             
     elif standard == "DiagAttnMean":
-        # token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].mean(1)
         token_rank = torch.diagonal(weight, dim1=-2, dim2=-1)[:,:,1:].mean(1)
         
     elif standard == "DiagAttnMax":
-        token_rank = weight.reshape(B, H, N*N)[:, :, N+1::N+1].max(1)[0]
-            
+        token_rank = torch.diagonal(weight, dim1=-2, dim2=-1)[:,:,1:].max(1)[0]
+        
+    elif standard == "MixedAttnMean":
+        token_rank_1 = torch.diagonal(weight, dim1=-2, dim2=-1)[:,:,1:].mean(1)
+        token_rank_2 = weight[:,:,:,1:].sum(-2).mean(1)
+        token_rank = token_rank_1 * token_rank_2
+        
+    elif standard == "MixedAttnMax":
+        token_rank_1 = torch.diagonal(weight, dim1=-2, dim2=-1)[:,:,1:].max(1)[0]
+        token_rank_2 = weight[:,:,:,1:].sum(-2).max(1)[0]
+        token_rank = token_rank_1 * token_rank_2
+        
+    elif standard == "CosSimMean":
+        weight = weight[:,:,1:,:].mean(1)
+        weight = weight / weight.norm(dim=-1, keepdim=True)
+        token_rank = -(weight @ weight.transpose(-1, -2)).sum(-1)
+    
+    elif standard == "CosSimMax":
+        weight = weight[:,:,1:,:].max(1)[0]
+        weight = weight / weight.norm(dim=-1, keepdim=True)
+        token_rank = -(weight @ weight.transpose(-1, -2)).sum(-1)
+        
     elif standard == "Random":
         token_rank = torch.randn((B, N-1), device=weight.device)
             
@@ -176,18 +183,16 @@ def select(weight, standard, num_prop, descending=True):
         print("Type\'", standard, "\' selection not supported.")
         assert False
         
-    token_rank = torch.argsort(token_rank, dim=1, descending=descending) # B, N-1
-    # index_cls = torch.zeros((B, 1), device=token_rank.device, dtype=token_rank.dtype) # B, 1
-    # index_kept = torch.cat((index_cls, token_rank[:, :-num_prop]+1), dim=1) # B, N-K
-    index_kept = token_rank[:, :-num_prop]+1 # B, N-K
-    index_elim = token_rank[:, -num_prop:]+1 # B, K
-    return index_kept, index_elim
+    token_rank = torch.argsort(token_rank, dim=1, descending=True) # B, N-1
+    index_kept = token_rank[:, :-num_prop]+1 # B, N-1-num_prop
+    index_prop = token_rank[:, -num_prop:]+1 # B, num_prop
+    return index_kept, index_prop
             
             
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., sparsity=1):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -197,6 +202,7 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.sparsity = sparsity
 
     def forward(self, x, token_scales=None):
         B, N, C = x.shape
@@ -208,13 +214,15 @@ class Attention(nn.Module):
         
         if token_scales is not None:
             attn = attn + token_scales.log().reshape(B, 1, 1, N)
+            
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         
-        attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
-        attn_sigma = attn_rank[:,:,int(N*N*0.75)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
-        attn = torch.where(attn>=attn_sigma, attn, 0.0)
-         
+        if self.sparsity < 1:
+            attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
+            attn_sigma = attn_rank[:,:,int(N*N*self.sparsity)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
+            attn = torch.where(attn>=attn_sigma, attn, 0.0)
+        
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -227,11 +235,12 @@ class GraphPropagationBlock(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, 
                  drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, 
                  init_values=None, selection="None", propagation="None", num_prop=0, sparsity=1,
-                 alpha=0, attention_scale=False):
+                 alpha=0, token_scale=False):
                  
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                              attn_drop=attn_drop, proj_drop=drop, sparsity=sparsity)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -245,21 +254,20 @@ class GraphPropagationBlock(nn.Module):
         self.selection = selection
         self.num_prop = num_prop
         self.sparsity = sparsity
-        self.attention_scale = attention_scale
+        self.token_scale = token_scale
         self.alpha = alpha
     
-    def forward(self, x, token_scales=None):
+    def forward(self, x, weight, token_scales=None):
         tmp, attn = self.attn(self.norm1(x), token_scales)
         x = x + self.drop_path(self.ls1(tmp))
         
         if self.selection != "None":
-            index_kept, index_elim = select(attn, num_prop=self.num_prop, standard=self.selection) # B, N
-            x, token_scales = propagate(x, attn, index_kept, index_elim, 
-                                        standard=self.propagation, sparsity=self.sparsity,
-                                        alpha=self.alpha, token_scales=token_scales)
-    
+            index_kept, index_prop = select(attn, standard=self.selection, num_prop=self.num_prop) # B, N
+            x, weight, token_scales = propagate(x, weight, index_kept, index_prop, standard=self.propagation,
+                                               alpha=self.alpha, token_scales=token_scales) 
+                                                
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        return x, token_scales
+        return x, weight, token_scales
         
         
 
@@ -300,7 +308,7 @@ class GraphPropagationTransformer(VisionTransformer):
             alpha=0.1,
             prop_start_layer=0,
             reconstruct_layer=None,
-            attention_scale=False,
+            token_scale=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -323,10 +331,11 @@ class GraphPropagationTransformer(VisionTransformer):
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate)
         
-        self.attention_scale = attention_scale
+        self.token_scale = token_scale
         self.reconstruct_layer = reconstruct_layer
         self.prop_start_layer = prop_start_layer
         self.alpha = alpha
+        self.num_heads = num_heads
         self.reconstruct = True if self.reconstruct_layer < depth and self.reconstruct_layer >= 0 else False
         
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
@@ -347,24 +356,53 @@ class GraphPropagationTransformer(VisionTransformer):
                 num_prop=num_prop if i >= prop_start_layer and i < reconstruct_layer else 0,
                 sparsity=sparsity if i >= prop_start_layer and i < reconstruct_layer else 1,
                 alpha=alpha if i >= prop_start_layer and i < reconstruct_layer else 0,
-                attention_scale=self.attention_scale
+                token_scale=self.token_scale
             )
             for i in range(depth)])
+        
+        if propagation == "GraphProp":
+            N = (img_size // patch_size)**2
+            # Create a range tensor of node indices
+            indices = torch.arange(N)
+            # Reshape the indices tensor to create a grid of row and column indices
+            row_indices = indices.view(-1, 1).expand(-1, N)
+            col_indices = indices.view(1, -1).expand(N, -1)
+            # Compute the adjacency matrix
+            row1, col1 = row_indices // int(math.sqrt(N)), row_indices % int(math.sqrt(N))
+            row2, col2 = col_indices // int(math.sqrt(N)), col_indices % int(math.sqrt(N))
+            graph = ((abs(row1 - row2) <= 1).float() * (abs(col1 - col2) <= 1).float())
+            graph = graph - torch.eye(N)
+            self.spatial_graph = graph
+        
+        if self.token_scale:
+            self.token_scales = torch.ones([N+1])
     
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        # No token reconstruction
-        if self.attention_scale:
-            B, N, C = x.shape
-            token_scales = torch.ones([B, N], device=x.device, dtype=x.dtype)
-        else:
-            token_scales = None
+        B, N, C = x.shape
+        
+        spatial_graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1).to(x.device)
+        
+        semantic_graph = x[:, 1:] @ x[:, 1:].transpose(-1, -2)
+        semantic_graph_rank = torch.sort(semantic_graph, dim=-1, descending=True)[0]
+        semantic_graph_sigma = semantic_graph_rank[:, :, 3].unsqueeze(-1).expand(-1, -1, N-1)
+        semantic_graph = torch.where(semantic_graph>=semantic_graph_sigma, 1, 0)
+        semantic_graph = semantic_graph - torch.eye(N-1, device=semantic_graph.device).unsqueeze(0)
+        
+        graph = torch.bitwise_or(semantic_graph.int(), spatial_graph.int()).float()
+        
+        # normalize
+        # degree = graph.sum(-1) # B, N
+        # degree = torch.diag_embed(degree**(-1/2))
+        # graph = degree @ graph @ degree
+        
+        token_scales = self.token_scales.unsqueeze(0).expand(B,-1).to(x.device) if self.token_scale else None
         
         for blk in self.blocks:
-            x, token_scales = blk(x, token_scales)
-
+            x, graph, token_scales = blk(x, graph, token_scales)
+        
         x = self.norm(x)
         return x
 
@@ -386,11 +424,4 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-
-@register_model
-def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = timm.create_model("deit_small_patch16_224", pretrained=True)
-    tome.patch.timm(model)
-    model.r = 8
     return model

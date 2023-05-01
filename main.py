@@ -209,14 +209,22 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--selection', default='None')
-    parser.add_argument('--propagation', default='None')
+    # Methods of selecting propagated tokens
+    parser.add_argument('--selection', default='None', 
+                        choices=['CLSAttnMean', 'CLSAttnMax', 'IMGAttnMean', 'IMGAttnMax', 
+                                 'DiagAttnMean', 'DiagAttnMax', 'MixedAttnMean', 'MixedAttnMax',
+                                 'CosSimMean', 'CosSimMax', 'Random', 'None'],
+                        type=str)
+    # Methods of propagating tokens
+    parser.add_argument('--propagation', default='None',
+                        choices=['None', 'Mean', 'GraphProp'],
+                        type=str)
     parser.add_argument('--num_prop', type=int, default=0)
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--alpha', type=float, default=0.1)
     parser.add_argument('--prop_start_layer', type=int, default=0)
     parser.add_argument('--reconstruct_layer', type=int, default=100)
-    parser.add_argument('--attention_scale', action='store_true', default=False)
+    parser.add_argument('--token_scale', action='store_true', default=False)
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -311,7 +319,7 @@ def main(args):
         alpha=args.alpha,
         prop_start_layer=args.prop_start_layer,
         reconstruct_layer=args.reconstruct_layer,
-        attention_scale=args.attention_scale
+        token_scale=args.token_scale
     )
     
     if args.finetune:
@@ -479,7 +487,7 @@ def main(args):
             fp.write("Sparsity: " + str(args.sparsity) + " ")
             fp.write("Alpha: " + str(args.alpha) + " ")
             fp.write("Num Prop: " + str(args.num_prop) + " ")
-            fp.write("Attention Rescale: " + str(args.attention_scale) + " ")
+            fp.write("Token scale: " + str(args.token_scale) + " ")
             fp.write('GMACs: ' + str(MACs*1e-9) + " ")
             fp.write('Results: ' + str(round(test_stats['acc1'], 2)) + "\n\n")
         """ delete """
