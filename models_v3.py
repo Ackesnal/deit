@@ -204,11 +204,17 @@ class Attention(nn.Module):
         attn = self.attn_drop(attn)
         
         if self.sparsity < 1:
-            # fast implementation 
+            # Fast implementation for filtering out sparsity% trivial values.
             k = int(N*N*(1-self.sparsity))
             threshold = torch.kthvalue(attn.reshape(B,self.num_heads, -1), k, dim=-1, keepdim=True)[0].unsqueeze(-1) # B,H,1,1
-            attn[attn<threshold] = 0.0
+            if self.training:
+                # during training, we cannot replace the elements, otherwise it leads to backward propagation errors.
+                mask = attn>=threshold
+                attn = attn * mask.float()
+            else:
+                attn[attn<threshold] = 0.0
             
+            # Legacy but stable implementation
             # attn_rank = torch.sort(attn.reshape(B,self.num_heads,-1), dim=-1, descending=True)[0]
             # attn_sigma = attn_rank[:,:,int(N*N*self.sparsity)].reshape(B,self.num_heads,1,1).expand(B,self.num_heads,N,N)
             # attn = torch.where(attn>=attn_sigma, attn, 0.0)
