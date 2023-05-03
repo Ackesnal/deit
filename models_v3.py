@@ -107,7 +107,7 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
 def select(weight: torch.Tensor, standard: str = "None", num_prop: int = 0):
     """
     Select image tokens to be propagated. The [CLS] token will be ignored. 
-    =============================
+    ======================================================================
     Args:
         - weight: Tensor([B, H, N, N]): only support the attention map of tokens in the current layer
         - standard: str: the method applied to select the tokens
