@@ -82,25 +82,27 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
         weight = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, N-1-num_prop
         
         # Step 3.2: generate the broadcast message and propagate the message to corresponding kept tokens
-        if training:
-            x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
-            x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
-        else:
-            # Get the non-zero values
-            non_zero_indices = torch.nonzero(weight_prop, as_tuple=True)
-            non_zero_values = weight_prop[non_zero_indices]
-            
-            # Sparse multiplication
-            batch_indices, row_indices, col_indices = non_zero_indices
-            sparse_matmul = alpha * non_zero_values[:, None] * x_prop[batch_indices, col_indices, :]
-            reduce_indices = batch_indices * x_kept.shape[1] + row_indices
-            
-            x_kept = x_kept.reshape(-1, C).scatter_reduce(dim=0, 
-                                                          index=reduce_indices[:, None], 
-                                                          src=sparse_matmul, 
-                                                          reduce="sum",
-                                                          include_self=True)
-            x_kept = x_kept.reshape(B, -1, C)
+        # Simple implementation
+        x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
+        x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
+        
+        """ scatter_reduce implementation for batched inputs
+        # Get the non-zero values
+        non_zero_indices = torch.nonzero(weight_prop, as_tuple=True)
+        non_zero_values = weight_prop[non_zero_indices]
+        
+        # Sparse multiplication
+        batch_indices, row_indices, col_indices = non_zero_indices
+        sparse_matmul = alpha * non_zero_values[:, None] * x_prop[batch_indices, col_indices, :]
+        reduce_indices = batch_indices * x_kept.shape[1] + row_indices
+        
+        x_kept = x_kept.reshape(-1, C).scatter_reduce(dim=0, 
+                                                      index=reduce_indices[:, None], 
+                                                      src=sparse_matmul, 
+                                                      reduce="sum",
+                                                      include_self=True)
+        x_kept = x_kept.reshape(B, -1, C)
+        """
         
         # Step 3.3: calculate the scale of each token if token_scales is not None
         if token_scales is not None:
@@ -460,9 +462,26 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
     return model
     
     
+    
+@register_model
+def graph_propagation_deit_base_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+    model = GraphPropagationTransformer(patch_size=16, embed_dim=768, depth=12,
+                                        num_heads=12, mlp_ratio=4, qkv_bias=True,
+                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+    
+    
 @register_model
 def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
     model = timm.create_model("deit_small_patch16_224", pretrained=True)
+    tome.patch.timm(model)
+    model.r = kwargs["num_prop"]
+    return model
+    
+    
+@register_model
+def token_merge_deit_base_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+    model = timm.create_model("deit_base_patch16_224", pretrained=True)
     tome.patch.timm(model)
     model.r = kwargs["num_prop"]
     return model

@@ -37,7 +37,7 @@ def get_macs(model, x=None):
     return macs
 
 
-def speed_test(model, ntest=100, batchsize=32, x=None, **kwargs):
+def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     if x is None:
         x = torch.rand(batchsize, 3, 224, 224).cuda()
     else:
