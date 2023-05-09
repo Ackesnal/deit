@@ -9,10 +9,12 @@ from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
 from typing import Optional
+import timm, tome
 
 
 def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, index_prop: torch.Tensor, 
-              standard: str = "None", alpha: Optional[float] = 0, token_scales: Optional[torch.Tensor] = None):
+              standard: str = "None", alpha: Optional[float] = 0, token_scales: Optional[torch.Tensor] = None,
+              training: bool = False):
     """
     Propagate tokens based on the selection results.
     ================================================
@@ -79,14 +81,28 @@ def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, i
         weight_prop = weight.gather(dim=2, index=index_prop.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, num_prop
         weight = weight.gather(dim=2, index=index_kept.unsqueeze(1).expand(-1,weight.shape[1],-1)) # B, N-1-num_prop, N-1-num_prop
         
-        # Step 3.2: normalize the propagation weights to ensure each propagated token is evenly broadcast
-        # weight_prop = weight_prop / (weight_prop.sum(-2, keepdim=True) + 1e-12)
+        # Step 3.2: generate the broadcast message and propagate the message to corresponding kept tokens
+        if training:
+            x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
+            x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
+        else:
+            # Get the non-zero values
+            non_zero_indices = torch.nonzero(weight_prop, as_tuple=True)
+            non_zero_values = weight_prop[non_zero_indices]
             
-        # Step 3.3: generate the broadcast message and propagate the message to corresponding kept tokens
-        x_prop = weight_prop @ x_prop # B, N-1-num_prop, C
-        x_kept = x_kept + alpha * x_prop # B, N-1-num_prop, C
+            # Sparse multiplication
+            batch_indices, row_indices, col_indices = non_zero_indices
+            sparse_matmul = alpha * non_zero_values[:, None] * x_prop[batch_indices, col_indices, :]
+            reduce_indices = batch_indices * x_kept.shape[1] + row_indices
+            
+            x_kept = x_kept.reshape(-1, C).scatter_reduce(dim=0, 
+                                                          index=reduce_indices[:, None], 
+                                                          src=sparse_matmul, 
+                                                          reduce="sum",
+                                                          include_self=True)
+            x_kept = x_kept.reshape(B, -1, C)
         
-        # Step 3.4: calculate the scale of each token if token_scales is not None
+        # Step 3.3: calculate the scale of each token if token_scales is not None
         if token_scales is not None:
             token_scales_cls = token_scales[:, 0:1] # B, 1
             token_scales = token_scales[:, 1:]
@@ -259,8 +275,8 @@ class GraphPropagationBlock(nn.Module):
         if self.selection != "None":
             index_kept, index_prop = select(attn, standard=self.selection, num_prop=self.num_prop) # B, N
             x, weight, token_scales = propagate(x, weight, index_kept, index_prop, standard=self.propagation,
-                                               alpha=self.alpha, token_scales=token_scales) 
-                                                
+                                               alpha=self.alpha, token_scales=token_scales, training=self.training)
+                                               
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x, weight, token_scales
         
@@ -370,7 +386,7 @@ class GraphPropagationTransformer(VisionTransformer):
             row2, col2 = col_indices // int(math.sqrt(N)), col_indices % int(math.sqrt(N))
             graph = ((abs(row1 - row2) <= 1).float() * (abs(col1 - col2) <= 1).float())
             graph = graph - torch.eye(N)
-            self.spatial_graph = graph
+            self.spatial_graph = graph.to("cuda")
         
         if self.token_scale:
             self.token_scales = torch.ones([N+1])
@@ -388,7 +404,10 @@ class GraphPropagationTransformer(VisionTransformer):
             x_cossim = x_normed @ x_normed.transpose(-1, -2)
             
             # Generate the graph
-            threshold = torch.kthvalue(x_cossim, N-5, dim=-1, keepdim=True)[0] # B,H,1,1
+            if self.graph_type == "Sementic":
+                threshold = torch.kthvalue(x_cossim, N-9, dim=-1, keepdim=True)[0] # B,H,1,1 
+            else:
+                threshold = torch.kthvalue(x_cossim, N-5, dim=-1, keepdim=True)[0] # B,H,1,1
             semantic_graph = torch.where(x_cossim>=threshold, 1.0, 0.0)
             semantic_graph = semantic_graph - torch.eye(N-1, device=semantic_graph.device).unsqueeze(0)
         
@@ -396,7 +415,7 @@ class GraphPropagationTransformer(VisionTransformer):
             graph = None
         else:
             if self.graph_type == "Spatial":
-                graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1).to(x.device)
+                graph = self.spatial_graph.unsqueeze(0).expand(B,-1,-1)#.to(x.device)
             elif self.graph_type == "Semantic":
                 graph = semantic_graph
             elif self.graph_type == "Mixed":
@@ -438,4 +457,12 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+    
+    
+@register_model
+def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+    model = timm.create_model("deit_small_patch16_224", pretrained=True)
+    tome.patch.timm(model)
+    model.r = kwargs["num_prop"]
     return model

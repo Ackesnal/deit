@@ -37,7 +37,7 @@ def get_macs(model, x=None):
     return macs
 
 
-def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
+def speed_test(model, ntest=100, batchsize=32, x=None, **kwargs):
     if x is None:
         x = torch.rand(batchsize, 3, 224, 224).cuda()
     else:
@@ -389,10 +389,17 @@ def main(args):
         print('Start inference speed testing...')
         inference_speed = speed_test(model)
         print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        total = 0
         inference_speed = speed_test(model)
         print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
         inference_speed = speed_test(model)
         print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
+        print('Average throughput:', round(total/3, 2), 'images/s')
         MACs = get_macs(model)
         print('GMACs:', MACs * 1e-9)
     if args.only_test_speed:
