@@ -407,7 +407,7 @@ class GraphPropagationTransformer(VisionTransformer):
             
             # Generate the graph
             if self.graph_type == "Sementic":
-                threshold = torch.kthvalue(x_cossim, N-9, dim=-1, keepdim=True)[0] # B,H,1,1 
+                threshold = torch.kthvalue(x_cossim, N-10, dim=-1, keepdim=True)[0] # B,H,1,1 
             else:
                 threshold = torch.kthvalue(x_cossim, N-5, dim=-1, keepdim=True)[0] # B,H,1,1
             semantic_graph = torch.where(x_cossim>=threshold, 1.0, 0.0)

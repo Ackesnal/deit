@@ -496,10 +496,10 @@ def main(args):
             fp.write("|  Top-1 Acc: %2.2f  " % test_stats['acc1'])
             fp.write("|  Selection: %13s  " % args.selection)
             fp.write("|  Propagation: %10s  " % args.propagation)
-            fp.write("|  Sparsity: %1.1f  " % args.sparsity)
-            fp.write("|  Alpha: %1.1f  " % args.alpha)
+            fp.write("|  Sparsity: %1.2f  " % args.sparsity)
+            fp.write("|  Alpha: %1.2f  " % args.alpha)
             fp.write("|  Scale: %5s  " % str(args.token_scale))
-            fp.write("|  Graph: %7s  |\n\n" % str(args.graph_type))
+            fp.write("|  Graph: %8s  |\n\n" % str(args.graph_type))
         """ delete """
         return
     
