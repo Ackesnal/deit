@@ -8,8 +8,10 @@ Install Python 3.8+, PyTorch 1.7.0+, torchvision 0.8.1+ and timm==0.4.12:
 
 ```
 conda create -n gtp python=3.8
-conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
-pip install timm==0.4.12
+conda activate gtp
+conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install timm==0.9.2
+pip install torchprofile
 ```
 
 ## Data preparation

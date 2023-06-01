@@ -9,7 +9,7 @@ from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
 from typing import Optional
-import timm, tome
+import timm
 
 
 def propagate(x: torch.Tensor, weight: torch.Tensor, 
@@ -292,9 +292,9 @@ class GraphPropagationBlock(nn.Module):
         x = x + self.drop_path(self.ls1(tmp))
         
         if self.selection != "None":
-            index_kept, index_prop = select(attn, standard=self.selection, num_prop=self.num_prop) # B, N
+            index_kept, index_prop = select(attn, standard=self.selection, num_prop=self.num_prop)
             x, weight, token_scales = propagate(x, weight, index_kept, index_prop, standard=self.propagation,
-                                               alpha=self.alpha, token_scales=token_scales, training=self.training)
+                                               alpha=self.alpha, token_scales=token_scales)
                                                
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x, weight, token_scales
