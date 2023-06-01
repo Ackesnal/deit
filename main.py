@@ -45,6 +45,10 @@ def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     model.eval()
 
     start = time.time()
+    with torch.cuda.amp.autocast():
+        with torch.no_grad():
+            for i in range(ntest):
+                model(x, **kwargs)
     for i in range(ntest):
         model(x, **kwargs)
     torch.cuda.synchronize()
@@ -222,9 +226,9 @@ def get_args_parser():
     # Types of graph
     parser.add_argument('--graph_type', default='None', choices=['None', 'Spatial', 'Semantic', 'Mixed'], type=str)
     parser.add_argument('--num_prop', type=int, default=0)
+    parser.add_argument('--num_neighbours', type=int, default=8)
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--alpha', type=float, default=0.1)
-    parser.add_argument('--prop_start_layer', type=int, default=0)
     parser.add_argument('--token_scale', action='store_true', default=False)
     
     # speed test
@@ -317,9 +321,9 @@ def main(args):
         selection=args.selection,
         propagation=args.propagation,
         num_prop=args.num_prop,
+        num_neighbours=args.num_neighbours,
         sparsity=args.sparsity,
         alpha=args.alpha,
-        prop_start_layer=args.prop_start_layer,
         token_scale=args.token_scale,
         graph_type=args.graph_type
     )
@@ -488,19 +492,6 @@ def main(args):
         print('GMACs:', MACs * 1e-9)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        
-        """ delete """
-        with open("results", "a") as fp:
-            fp.write("|  Num Prop: %2d  " % args.num_prop)
-            fp.write("|  GMACs: %1.3f  " % (MACs*1e-9))
-            fp.write("|  Top-1 Acc: %2.2f  " % test_stats['acc1'])
-            fp.write("|  Selection: %13s  " % args.selection)
-            fp.write("|  Propagation: %10s  " % args.propagation)
-            fp.write("|  Sparsity: %1.2f  " % args.sparsity)
-            fp.write("|  Alpha: %1.2f  " % args.alpha)
-            fp.write("|  Scale: %5s  " % str(args.token_scale))
-            fp.write("|  Graph: %8s  |\n\n" % str(args.graph_type))
-        """ delete """
         return
     
     MACs = get_macs(model)

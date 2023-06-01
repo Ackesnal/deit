@@ -12,27 +12,39 @@ from typing import Optional
 import timm, tome
 
 
-def propagate(x: torch.Tensor, weight: torch.Tensor, index_kept: torch.Tensor, index_prop: torch.Tensor, 
-              standard: str = "None", alpha: Optional[float] = 0, token_scales: Optional[torch.Tensor] = None,
-              training: bool = False):
+def propagate(x: torch.Tensor, weight: torch.Tensor, 
+              index_kept: torch.Tensor, index_prop: torch.Tensor, 
+              standard: str = "None", alpha: Optional[float] = 0, 
+              token_scales: Optional[torch.Tensor] = None):
     """
     Propagate tokens based on the selection results.
     ================================================
     Args:
         - x: Tensor([B, N, C]): the feature map of N tokens, including the [CLS] token.
+        
         - weight: Tensor([B, N-1, N-1]): the weight of each token propagated to the other tokens, 
                                          excluding the [CLS] token. weight could be a pre-defined 
                                          graph of the current feature map (by default) or the
                                          attention map (need to manually modify the Block Module).
+                                         
         - index_kept: Tensor([B, N-1-num_prop]): the index of kept image tokens in the feature map X
+        
         - index_prop: Tensor([B, num_prop]): the index of propagated image tokens in the feature map X
-        - standard: str: the method applied to propagate the tokens
+        
+        - standard: str: the method applied to propagate the tokens, including "None", "Mean" and 
+                         "GraphProp"
+        
         - alpha: float: the coefficient of propagated features
-        - token_scales: Tensor([B, N]): the scale of tokens, including the [CLS] token. None by default.
-                                        token_scales represents the scales of each token and sum up to N.
+        
+        - token_scales: Tensor([B, N]): the scale of tokens, including the [CLS] token. token_scales
+                                        is None by default. If it is not None, then token_scales 
+                                        represents the scales of each token and should sum up to N.
+        
     Return:
         - x: Tensor([B, N-1-num_prop, C]): the feature map after propagation
+        
         - weight: Tensor([B, N-1-num_prop, N-1-num_prop]): the graph of feature map after propagation
+        
         - token_scales: Tensor([B, N-1-num_prop]): the scale of tokens after propagation
     """
     
@@ -127,12 +139,17 @@ def select(weight: torch.Tensor, standard: str = "None", num_prop: int = 0):
     Select image tokens to be propagated. The [CLS] token will be ignored. 
     ======================================================================
     Args:
-        - weight: Tensor([B, H, N, N]): only support the attention map of tokens in the current layer
+        - weight: Tensor([B, H, N, N]): used for selecting the kept tokens. Only support the
+                                        attention map of tokens at the moment.
+        
         - standard: str: the method applied to select the tokens
+        
         - num_prop: int: the number of tokens to be propagated
+        
     Return:
-        - index_kept: Tensor([B, N-1-num_prop]): the index of kept image tokens in the original feature map X
-        - index_prop: Tensor([B, num_prop]): the index of propagated image tokens in the original feature map X
+        - index_kept: Tensor([B, N-1-num_prop]): the index of kept tokens 
+        
+        - index_prop: Tensor([B, num_prop]): the index of propagated tokens
     """
     
     assert len(weight.shape) == 4, "Selection methods on tensors other than the attention map haven't been supported yet."
@@ -317,9 +334,9 @@ class GraphPropagationTransformer(VisionTransformer):
             selection="None",
             propagation="None",
             num_prop=0,
+            num_neighbours=0,
             sparsity=1,
             alpha=0.1,
-            prop_start_layer=0,
             token_scale=False,
             graph_type="None",
             pretrained_cfg_overlay=None):
@@ -345,8 +362,7 @@ class GraphPropagationTransformer(VisionTransformer):
             drop_path_rate=drop_path_rate)
         
         self.token_scale = token_scale
-        self.prop_start_layer = prop_start_layer
-        self.alpha = alpha
+        self.num_neighbours = num_neighbours
         self.graph_type = graph_type
         
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule    
@@ -362,9 +378,9 @@ class GraphPropagationTransformer(VisionTransformer):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                selection=selection if i >= prop_start_layer else "None",
-                propagation=propagation if i >= prop_start_layer else "None",
-                num_prop=num_prop if i >= prop_start_layer else 0,
+                selection=selection,
+                propagation=propagation,
+                num_prop=num_prop,
                 sparsity=sparsity,
                 alpha=alpha
             )
@@ -388,7 +404,7 @@ class GraphPropagationTransformer(VisionTransformer):
             row2, col2 = col_indices // int(math.sqrt(N)), col_indices % int(math.sqrt(N))
             graph = ((abs(row1 - row2) <= 1).float() * (abs(col1 - col2) <= 1).float())
             graph = graph - torch.eye(N)
-            self.spatial_graph = graph.to("cuda")
+            self.spatial_graph = graph.to("cuda") # comment .to("cuda") if the environment is cpu
         
         if self.token_scale:
             self.token_scales = torch.ones([N+1])
@@ -404,12 +420,7 @@ class GraphPropagationTransformer(VisionTransformer):
             # Compute cosine similarity
             x_normed = x[:, 1:] / x[:, 1:].norm(dim=-1, keepdim=True)
             x_cossim = x_normed @ x_normed.transpose(-1, -2)
-            
-            # Generate the graph
-            if self.graph_type == "Sementic":
-                threshold = torch.kthvalue(x_cossim, N-10, dim=-1, keepdim=True)[0] # B,H,1,1 
-            else:
-                threshold = torch.kthvalue(x_cossim, N-5, dim=-1, keepdim=True)[0] # B,H,1,1
+            threshold = torch.kthvalue(x_cossim, N-1-self.num_neighbours, dim=-1, keepdim=True)[0] # B,H,1,1 
             semantic_graph = torch.where(x_cossim>=threshold, 1.0, 0.0)
             semantic_graph = semantic_graph - torch.eye(N-1, device=semantic_graph.device).unsqueeze(0)
         
@@ -468,20 +479,4 @@ def graph_propagation_deit_base_patch16_224(pretrained=False, pretrained_cfg=Non
     model = GraphPropagationTransformer(patch_size=16, embed_dim=768, depth=12,
                                         num_heads=12, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-    
-    
-@register_model
-def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = timm.create_model("deit_small_patch16_224", pretrained=True)
-    tome.patch.timm(model)
-    model.r = kwargs["num_prop"]
-    return model
-    
-    
-@register_model
-def token_merge_deit_base_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = timm.create_model("deit_base_patch16_224", pretrained=True)
-    tome.patch.timm(model)
-    model.r = kwargs["num_prop"]
     return model
