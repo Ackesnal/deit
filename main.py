@@ -213,23 +213,9 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    # Methods of selecting propagated tokens
-    parser.add_argument('--selection', default='None', 
-                        choices=['CLSAttnMean', 'CLSAttnMax', 'IMGAttnMean', 'IMGAttnMax', 
-                                 'DiagAttnMean', 'DiagAttnMax', 'MixedAttnMean', 'MixedAttnMax',
-                                 'CosSimMean', 'CosSimMax', 'Random', 'None'],
-                        type=str)
-    # Methods of propagating tokens
-    parser.add_argument('--propagation', default='None',
-                        choices=['None', 'Mean', 'GraphProp'],
-                        type=str)
-    # Types of graph
-    parser.add_argument('--graph_type', default='None', choices=['None', 'Spatial', 'Semantic', 'Mixed'], type=str)
-    parser.add_argument('--num_prop', type=int, default=0)
-    parser.add_argument('--num_neighbours', type=int, default=8)
-    parser.add_argument('--sparsity', type=float, default=1)
-    parser.add_argument('--alpha', type=float, default=0.1)
-    parser.add_argument('--token_scale', action='store_true', default=False)
+    
+    parser.add_argument('--init_values', default=None, type=float)
+    
     
     # speed test
     parser.add_argument('--test_speed', action='store_true')
@@ -318,14 +304,8 @@ def main(args):
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
         img_size=args.input_size,
-        selection=args.selection,
-        propagation=args.propagation,
-        num_prop=args.num_prop,
-        num_neighbours=args.num_neighbours,
-        sparsity=args.sparsity,
-        alpha=args.alpha,
-        token_scale=args.token_scale,
-        graph_type=args.graph_type
+        global_pool='avg',
+        init_values=args.init_values
     )
     
     if args.finetune:
@@ -387,27 +367,6 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
-    
-    if args.test_speed:
-        # test model throughput for three times to ensure accuracy
-        print('Start inference speed testing...')
-        inference_speed = speed_test(model)
-        print('inference_speed (inaccurate):', inference_speed, 'images/s')
-        total = 0
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        total = total + inference_speed
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        total = total + inference_speed
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        total = total + inference_speed
-        print('Average throughput:', round(total/3, 2), 'images/s')
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
-    if args.only_test_speed:
-        return
 
     model_ema = None
     if args.model_ema:
@@ -469,7 +428,28 @@ def main(args):
     criterion = DistillationLoss(
         criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
     )
-
+    
+    if args.test_speed:
+        # test model throughput for three times to ensure accuracy
+        print('Start inference speed testing...')
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        total = 0
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        total = total + inference_speed
+        print('Average throughput:', round(total/3, 2), 'images/s')
+        MACs = get_macs(model)
+        print('GMACs:', MACs * 1e-9)
+    if args.only_test_speed:
+        return
+    
     output_dir = Path(args.output_dir)
     if args.resume:
         if args.resume.startswith('https'):
@@ -487,6 +467,7 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
+        
     if args.eval:
         MACs = get_macs(model)
         print('GMACs:', MACs * 1e-9)
