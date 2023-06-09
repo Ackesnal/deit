@@ -305,7 +305,8 @@ def main(args):
         drop_block_rate=None,
         img_size=args.input_size,
         global_pool='avg',
-        init_values=args.init_values
+        init_values=args.init_values,
+        distillation=True if args.distillation_type != 'none' else False
     )
     
     if args.finetune:

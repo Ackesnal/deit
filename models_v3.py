@@ -17,20 +17,16 @@ class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
     def __init__(self, in_features, hidden_features=None, out_features=None,
-                 act_layer=nn.GELU, norm_layer=None, bias=True, drop=0.):
+                 act_layer=nn.GELU, norm_layer=None, bias=True):
         
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        bias = to_2tuple(bias)
-        drop_probs = to_2tuple(drop)
 
-        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias[0])
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
-        self.drop1 = nn.Dropout(drop_probs[0])
         self.norm = norm_layer(hidden_features) if norm_layer is not None else nn.Identity()
-        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias[1])
-        self.drop2 = nn.Dropout(drop_probs[1])
+        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
         self.hidden_features = hidden_features
 
     def forward(self, x):
@@ -43,19 +39,17 @@ class Mlp(nn.Module):
         x = x.reshape(B, H, N, H, C//H).transpose(1,3).reshape(B,H,N,C)
         # x = x.transpose(-1,-2).reshape(B, C, H, N).permute(0, 2, 3, 1)
         
-        x = self.drop1(x)
         x = self.fc2(x)
-        x = self.drop2(x)
         return x
 
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-    def __init__(self, dim, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, qkv_bias=False, qk_scale=None):
         super().__init__()
         self.scale = qk_scale or dim ** -0.5
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
+        self.qkv = nn.Linear(dim, dim*3, bias=qkv_bias)
+        self.proj = nn.Linear(dim, dim)
 
     def forward(self, x):
         B, H, N, C = x.shape
@@ -71,6 +65,8 @@ class Attention(nn.Module):
         # x = x.reshape(B, H, N, H, C//H).permute(0,2,1,4,3).reshape(B,N,C,H).permute(0,3,1,2)
         x = x.reshape(B, H, N, H, C//H).transpose(1,3).reshape(B,H,N,C)
         # x = x.transpose(-1,-2).reshape(B, C, H, N).permute(0, 2, 3, 1)
+        
+        x = self.proj(x)
         return x
 
 
@@ -83,13 +79,13 @@ class Block(nn.Module):
                  
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = Attention(dim, qkv_bias=qkv_bias, qk_scale=qk_scale)
         
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer)
         
         if init_values is not None:
             self.layer_scale = True
@@ -139,7 +135,8 @@ class ShuffleTransformer(VisionTransformer):
             embed_layer=PatchEmbed,
             norm_layer=nn.LayerNorm,
             act_layer=nn.GELU,
-            block_fn=Block):
+            block_fn=Block,
+            distillation=False):
         
         super().__init__(
             img_size=img_size,
@@ -179,6 +176,11 @@ class ShuffleTransformer(VisionTransformer):
                 act_layer=act_layer
             )
             for i in range(depth)])
+        
+        if distillation:
+            self.dist_head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        else:
+            self.dist_head = None
     
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -197,12 +199,20 @@ class ShuffleTransformer(VisionTransformer):
         if self.global_pool:
             x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
         x = self.fc_norm(x)
-        return x if pre_logits else self.head(x)
+        
+        if self.training and self.dist_head:
+            return self.head(x), self.dist_head(x)
+        else:
+            return self.head(x)
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.forward_head(x)
-        return x
+        if self.training and self.dist_head:
+            x, x_dist = self.forward_head(x)
+            return x, x_dist
+        else:
+            x = self.forward_head(x)
+            return x
         
 
 @register_model
