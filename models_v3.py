@@ -11,6 +11,7 @@ import math
 from typing import Optional
 import timm
 from timm.layers.helpers import to_2tuple
+import torch.utils.checkpoint as checkpoint
     
 
 class Mlp(nn.Module):
@@ -136,7 +137,8 @@ class ShuffleTransformer(VisionTransformer):
             norm_layer=nn.LayerNorm,
             act_layer=nn.GELU,
             block_fn=Block,
-            distillation=False):
+            distillation=False,
+            use_checkpoint=False):
         
         super().__init__(
             img_size=img_size,
@@ -177,10 +179,10 @@ class ShuffleTransformer(VisionTransformer):
             )
             for i in range(depth)])
         
-        if distillation:
-            self.dist_head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-        else:
-            self.dist_head = None
+        self.distillation = distillation
+        if self.distillation:
+            self.distill_head = nn.Linear(num_classes, num_classes)
+        self.use_checkpoint = use_checkpoint
     
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -189,7 +191,10 @@ class ShuffleTransformer(VisionTransformer):
         B, N, C = x.shape
         x = x.reshape(B, N, self.num_heads, C//self.num_heads).transpose(1,2) # B, H, N, C
         
-        x = self.blocks(x)
+        if self.use_checkpoint:
+            x = checkpoint.checkpoint_sequential(self.blocks, 12, x)
+        else:
+            x = self.blocks(x)
         
         x = x.transpose(1,2).reshape(B, N, C) # B, N, C
         x = self.norm(x)
@@ -200,18 +205,14 @@ class ShuffleTransformer(VisionTransformer):
             x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
         x = self.fc_norm(x)
         
-        if self.training and self.dist_head:
-            return self.head(x), self.dist_head(x)
-        else:
-            return self.head(x)
+        return self.head(x)
 
     def forward(self, x):
         x = self.forward_features(x)
-        if self.training and self.dist_head:
-            x, x_dist = self.forward_head(x)
-            return x, x_dist
+        x = self.forward_head(x)
+        if self.training and self.distillation:
+            return x, self.distill_head(x)
         else:
-            x = self.forward_head(x)
             return x
         
 
@@ -238,7 +239,7 @@ def shufformer_extra_tiny_224(pretrained=False,
     
     
 @register_model
-def shufformer_extreme_tiny_224(pretrained=False, 
+def shufformer_extra_extra_tiny_224(pretrained=False, 
                                 pretrained_cfg=None, 
                                 pretrained_cfg_overlay=None, 
                                 **kwargs):

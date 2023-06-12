@@ -215,7 +215,7 @@ def get_args_parser():
     
     
     parser.add_argument('--init_values', default=None, type=float)
-    
+    parser.add_argument('--use_checkpoint', action='store_true')
     
     # speed test
     parser.add_argument('--test_speed', action='store_true')
@@ -306,7 +306,8 @@ def main(args):
         img_size=args.input_size,
         global_pool='avg',
         init_values=args.init_values,
-        distillation=True if args.distillation_type != 'none' else False
+        distillation=True if args.distillation_type != 'none' else False,
+        use_checkpoint=arg.use_checkpoint
     )
     
     if args.finetune:
