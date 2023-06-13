@@ -307,7 +307,7 @@ def main(args):
         global_pool='avg',
         init_values=args.init_values,
         distillation=True if args.distillation_type != 'none' else False,
-        use_checkpoint=arg.use_checkpoint
+        use_checkpoint=args.use_checkpoint
     )
     
     if args.finetune:

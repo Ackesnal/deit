@@ -191,8 +191,9 @@ class ShuffleTransformer(VisionTransformer):
         B, N, C = x.shape
         x = x.reshape(B, N, self.num_heads, C//self.num_heads).transpose(1,2) # B, H, N, C
         
-        if self.use_checkpoint:
-            x = checkpoint.checkpoint_sequential(self.blocks, 12, x)
+        if self.use_checkpoint and self.training:
+            for blk in self.blocks:
+                x = checkpoint.checkpoint(blk, x)
         else:
             x = self.blocks(x)
         
