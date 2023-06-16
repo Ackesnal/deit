@@ -42,7 +42,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             outputs = model(samples)
             loss = criterion(samples, outputs, targets)
             loss = loss / args.accumulation_steps
-
+  
         loss_value = loss.item() * args.accumulation_steps
 
         if not math.isfinite(loss_value):
@@ -51,13 +51,20 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        loss_scaler(loss, optimizer, clip_grad=max_norm,
-                    parameters=model.parameters(), create_graph=is_second_order,
-                    update_grad=(idx + 1) % args.accumulation_steps == 0)
-        
-        if (idx + 1) % args.accumulation_steps == 0:
-            optimizer.zero_grad()
-            lr_scheduler.step_update((epoch*len(data_loader)+idx) // args.accumulation_steps)
+                
+        if args.accumulation_steps > 1:
+            if idx % args.accumulation_steps == 0:            
+                optimizer.zero_grad()
+                lr_scheduler.step_update((epoch*len(data_loader)+idx) // args.accumulation_steps)
+                                        
+            loss_scaler(loss, optimizer, clip_grad=max_norm,
+                        parameters=model.parameters(), create_graph=is_second_order,
+                        update_grad=(idx + 1) % args.accumulation_steps == 0)
+                                                            
+        else:
+            optimizer.zero_grad()        
+            loss_scaler(loss, optimizer, clip_grad=max_norm,
+                        parameters=model.parameters(), create_graph=is_second_order)
         
         idx = idx + 1
         
@@ -67,6 +74,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        
+    if args.accumulation_steps == 1:
+        lr_scheduler.step(epoch)
+                        
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)

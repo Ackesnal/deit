@@ -398,16 +398,13 @@ def main(args):
         args.sched_on_updates = True
         args.updates_per_epoch = len(data_loader_train)//args.accumulation_steps
         
-        #(len(loader_train) + args.grad_accum_steps - 1) // args.grad_accum_steps
-        
     optimizer = create_optimizer(args, model_without_ddp)
-    if args.accumulation_steps <= 1:
+    if args.accumulation_steps == 1:
         loss_scaler = NativeScaler()
+        lr_scheduler, _ = create_scheduler(args, optimizer)
     else:
         loss_scaler = utils.NativeScalerWithGradNormCount()
-
-    lr_scheduler, _ = create_scheduler(args, optimizer, 
-        updates_per_epoch=args.updates_per_epoch)
+        lr_scheduler, _ = create_scheduler(args, optimizer, updates_per_epoch=args.updates_per_epoch)
 
     criterion = LabelSmoothingCrossEntropy()
 
