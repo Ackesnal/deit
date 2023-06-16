@@ -221,6 +221,7 @@ def get_args_parser():
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
     
+    parser.add_argument('--accumulation-steps', default=1, type=int)
     return parser
 
 
@@ -388,10 +389,25 @@ def main(args):
     if not args.unscale_lr:
         linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 1024.0
         args.lr = linear_scaled_lr
+        
+    if args.accumulation_steps > 1:
+        args.lr = args.lr * args.accumulation_steps
+        args.warmup_lr = args.warmup_lr * args.accumulation_steps
+        args.min_lr = args.min_lr * args.accumulation_steps
+        args.step_on_epochs = False
+        args.sched_on_updates = True
+        args.updates_per_epoch = len(data_loader_train)//args.accumulation_steps
+        
+        #(len(loader_train) + args.grad_accum_steps - 1) // args.grad_accum_steps
+        
     optimizer = create_optimizer(args, model_without_ddp)
-    loss_scaler = NativeScaler()
+    if args.accumulation_steps <= 1:
+        loss_scaler = NativeScaler()
+    else:
+        loss_scaler = utils.NativeScalerWithGradNormCount()
 
-    lr_scheduler, _ = create_scheduler(args, optimizer)
+    lr_scheduler, _ = create_scheduler(args, optimizer, 
+        updates_per_epoch=args.updates_per_epoch)
 
     criterion = LabelSmoothingCrossEntropy()
 
@@ -491,10 +507,11 @@ def main(args):
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
+            lr_scheduler = lr_scheduler,
             args = args,
         )
 
-        lr_scheduler.step(epoch)
+        # lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             for checkpoint_path in checkpoint_paths:

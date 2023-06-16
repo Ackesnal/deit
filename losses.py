@@ -56,5 +56,5 @@ class DistillationLoss(torch.nn.Module):
         elif self.distillation_type == 'hard':
             distillation_loss = F.cross_entropy(outputs_kd, teacher_outputs.argmax(dim=1))
         
-        loss = base_loss * (1-self.alpha) + distillation_loss * self.alpha
+        loss = base_loss + distillation_loss * self.alpha # base_loss * (1-self.alpha) + distillation_loss * self.alpha
         return loss

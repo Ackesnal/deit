@@ -180,8 +180,8 @@ class ShuffleTransformer(VisionTransformer):
             for i in range(depth)])
         
         self.distillation = distillation
-        if self.distillation:
-            self.distill_head = nn.Linear(num_classes, num_classes)
+        # if self.distillation:
+        #    self.distill_head = nn.Linear(num_classes, num_classes)
         self.use_checkpoint = use_checkpoint
     
     def forward_features(self, x):
@@ -212,7 +212,7 @@ class ShuffleTransformer(VisionTransformer):
         x = self.forward_features(x)
         x = self.forward_head(x)
         if self.training and self.distillation:
-            return x, self.distill_head(x)
+            return x, x #self.distill_head(x)
         else:
             return x
         
