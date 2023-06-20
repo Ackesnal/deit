@@ -389,7 +389,7 @@ def main(args):
     if not args.unscale_lr:
         linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
         args.lr = linear_scaled_lr
-        
+    
     optimizer = create_optimizer(args, model_without_ddp)
     if args.accumulation_steps == 1:
         loss_scaler = NativeScaler()
