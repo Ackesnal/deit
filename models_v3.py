@@ -85,7 +85,7 @@ class Attention(nn.Module):
         x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # B, H, N, C/H
         
         x = self.proj(x.transpose(2,3).reshape(B, C, N)).transpose(1,2) # N
-        x = self.drop_proj(x)
+        x = self.proj_drop(x)
         return x
         
 

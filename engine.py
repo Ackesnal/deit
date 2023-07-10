@@ -41,8 +41,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             loss = criterion(samples, outputs, targets)
+            loss = loss / args.accumulation_steps
   
-        loss_value = loss.item()
+        loss_value = loss.item() * args.accumulation_steps
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))

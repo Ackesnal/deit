@@ -389,6 +389,11 @@ def main(args):
     if not args.unscale_lr:
         linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
         args.lr = linear_scaled_lr
+        
+    if args.accumulation_steps > 1:
+        args.lr = args.lr * args.accumulation_steps
+        args.min_lr = args.min_lr * args.accumulation_steps
+        args.warmup_lr = args.warmup_lr * args.accumulation_steps
     
     optimizer = create_optimizer(args, model_without_ddp)
     if args.accumulation_steps == 1:
