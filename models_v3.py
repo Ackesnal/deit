@@ -17,26 +17,17 @@ import torch.utils.checkpoint as checkpoint
 from torch.jit import Final
     
 
-class Mlp(nn.Module):
+class Downsampling(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
     def __init__(
             self,
             in_features,
-            hidden_features=None,
-            out_features=None,
-            num_heads=3,
+            out_features,
             act_layer=nn.GELU,
             drop=0.
     ):
         super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        
-        in_features = in_features
-        out_features = out_features
-        hidden_features = hidden_features
-        self.num_heads = num_heads
         
         self.fc1 = nn.Conv1d(in_channels=in_features, out_channels=hidden_features, kernel_size=1, groups=num_heads)
         self.fc2 = nn.Conv1d(in_channels=hidden_features, out_channels=out_features, kernel_size=1, groups=num_heads)
@@ -59,32 +50,81 @@ class Mlp(nn.Module):
 class Attention(nn.Module):
     def __init__(
             self,
-            dim,
-            num_heads=3,
+            dim_in,
+            dim_expanded,
+            dim_out,
+            num_heads,
             attn_drop=0.,
-            proj_drop=0.
-            
+            proj_drop=0.,
+            norm_layer=nn.LayerNorm,
+            act_layer=nn.GELU,
+            window_size=7
     ):
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         
         self.num_heads = num_heads
         self.attn_drop = attn_drop
-        self.qkv = nn.Conv1d(in_channels=dim, out_channels=dim*3, kernel_size=1, groups=num_heads)
-        self.proj = nn.Conv1d(in_channels=dim, out_channels=dim, kernel_size=1)
+        self.window_size = window_size
+        self.dim_expanded = dim_expanded
+        
+        self.pre_norm = norm_layer(dim_in)
+        self.post_norm = norm_layer(dim_in)
+        self.act = act_layer()
+        
+        self.qk = nn.Conv1d(in_channels=dim_in, 
+                            out_channels=dim_in*2, 
+                            kernel_size=1, 
+                            groups=num_heads)
+        self.v = nn.Conv1d(in_channels=dim_in, 
+                           out_channels=dim_expanded, 
+                           kernel_size=1, 
+                           groups=num_heads)
+        
+        self.proj_1 = nn.Linear(in_channels=dim_expanded, out_channels=dim_expanded)
+        self.proj_2 = nn.Linear(in_channels=dim_expanded, out_channels=dim_out)
         self.proj_drop = nn.Dropout(proj_drop)
-
+        
+        
+        
     def forward(self, x):
-        B, N, C = x.shape
-        qkv = self.qkv(x.transpose(1,2)).reshape(B, 3, self.num_heads, C//self.num_heads, N).permute(1,0,2,4,3) # B, C*3, N
-        q, k, v = torch.chunk(qkv, chunks=3, dim=0) # B, H, N, C/H
+        # shortcut
+        B, H, W, C = x.shape
+        shortcut = x
         
-        # shuffle
-        v = v.reshape(B, self.num_heads, N, self.num_heads, C//self.num_heads//self.num_heads).transpose(1,3).reshape(B, self.num_heads, N, C//self.num_heads)
+        # pre-layer normalization
+        x = self.pre_norm(x)
         
-        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # B, H, N, C/H
+        # convert to window-based tensor
+        h = H // self.window_size
+        w = W // self.window_size
+        x = x.reshape(B, h, self.window_size, w, self.window_size, C)
+        x = x.permute(0, 1, 3, 5, 2, 4).reshape(B*h*w, C, self.window_size*self.window_size) # B*h*w, C, window_size*window_size
         
-        x = self.proj(x.transpose(2,3).reshape(B, C, N)).transpose(1,2) # N
+        new_B, new_C, new_N = x.shape
+        
+        # calculate query, key
+        qk = self.qk(x).reshape(new_B, 2, self.num_heads, C//self.num_heads, new_N) # nB, (2, num_heads, nC//num_heads), nN
+        qk = qk.transpose(-1, -2) # nB, 2, num_heads, nN, nC//num_heads
+        q, k = torch.chunk(qk, chunks=2, dim=1) # nB, num_heads, nN, nC//num_heads
+        
+        # calculate value
+        v = self.v(x)
+        
+        # shuffle value channels
+        v = v.reshape(new_B, self.num_heads, self.num_heads, self.dim_expanded//self.num_heads//self.num_heads, new_N).permute(0, 2, 4, 1, 3).reshape(new_B, self.num_heads, new_N, self.dim_expanded//self.num_heads)  
+        # nB, num_heads, nN, nC*exp//num_heads
+        
+        # calculate attention
+        x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # nB, num_heads, nN, nC*exp//num_heads
+        
+        # transpose back
+        x = x.transpose(1, 2)
+        x = x.reshape(B, h, w, self.window_size, self.window_size, self.dim_expanded).transpose(2, 3).reshape(B, H, W, self.dim_expanded)
+        
+        # output linear
+        x = x + self.act(self.proj_1(x))
+        x = shortcut + self.proj_2(self.post_norm(x))
         x = self.proj_drop(x)
         return x
         
@@ -94,39 +134,32 @@ class Block(nn.Module):
     def __init__(
             self,
             dim,
-            num_heads,
+            num_heads=3,
+            window_size=7
             mlp_ratio=4.,
-            qkv_bias=False,
-            qk_norm=False,
             proj_drop=0.,
             attn_drop=0.,
-            init_values=None,
             drop_path=0.,
+            init_values=None,
             act_layer=nn.GELU,
             norm_layer=nn.LayerNorm,
-            mlp_layer=Mlp,
     ):
         super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim = dim, 
-                              num_heads=num_heads, 
-                              attn_drop=0., 
-                              proj_drop=0.)
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        
-        self.norm2 = norm_layer(dim)
-        self.mlp = mlp_layer(in_features=dim, 
-                             hidden_features=int(dim * mlp_ratio), 
-                             out_features=dim,
-                             num_heads=num_heads,
-                             act_layer=act_layer)
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.attn = Attention(dim_in = dim,
+                              dim_expanded = dim * mlp_ratio,
+                              dim_out = dim,
+                              num_heads = num_heads,
+                              attn_drop = attn_drop,
+                              proj_drop = proj_drop,
+                              norm_layer = norm_layer,
+                              act_layer = act_layer,
+                              window_size = 7)
         
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         
     def forward(self, x):
-        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
-        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+        x = x.reshape(B, (N**0.5), (N**0.5), C)
+        x = self.drop_path(self.attn(x))
         return x
 
         
