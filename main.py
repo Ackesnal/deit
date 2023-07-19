@@ -299,7 +299,7 @@ def main(args):
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
-        pretrained=True,
+        pretrained=False,
         num_classes=args.nb_classes,
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
@@ -307,8 +307,8 @@ def main(args):
         img_size=args.input_size,
         global_pool='avg',
         init_values=args.init_values,
-        distillation=True if args.distillation_type != 'none' else False,
-        use_checkpoint=args.use_checkpoint
+        #distillation=True if args.distillation_type != 'none' else False,
+        #use_checkpoint=args.use_checkpoint
     )
     
     if args.finetune:
