@@ -8,6 +8,7 @@ from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models._registry import register_model
 from timm.models.layers import trunc_normal_, PatchEmbed, Mlp, DropPath
 import math
+import timm, tome
 
 
 
@@ -217,4 +218,11 @@ def graph_propagation_deit_small_patch16_224(pretrained=False, pretrained_cfg=No
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
                                         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+    
+@register_model
+def token_merge_deit_small_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+    model = timm.create_model("deit_small_patch16_224", pretrained=True)
+    tome.patch.timm(model)
+    model.r = kwargs["num_prop"]
     return model
