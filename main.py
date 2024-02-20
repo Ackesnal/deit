@@ -22,6 +22,7 @@ from engine import train_one_epoch, evaluate
 from losses import DistillationLoss, OrthogonalLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
+import torch.autograd.profiler as profiler
 
 import models
 import models_v2
@@ -55,6 +56,18 @@ def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     speed = batchsize * ntest / elapse
 
     return speed
+    
+
+def signal_test(model):
+    x = torch.rand(1, 3, 224, 224).cuda()
+    model.eval()
+    #model(x, signal_test=True)
+    
+    model = model.to("cpu")
+    x = x.to("cpu")
+    with profiler.profile(record_shapes=True, use_cuda=False, with_modules=True) as prof:
+        model(x)
+    print(prof.key_averages().table(sort_by="cpu_time_total"))
 
 
 def get_args_parser():
@@ -211,17 +224,10 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--sparsity', type=float, default=1)
-    parser.add_argument('--initial', default=False, action='store_true')
-    parser.add_argument('--jumping', default=False, action='store_true')
-    parser.add_argument('--combine', default="none", choices=["none", "max", "attention", ""])
-    parser.add_argument('--diverse', default=False, action='store_true')
-    parser.add_argument('--shuffle', default=False, action='store_true')
-    
-    
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
     
+    parser.add_argument('--signal_test', action='store_true')
     return parser
 
 
@@ -305,13 +311,6 @@ def main(args):
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
-        img_size=args.input_size,
-        sparsity=args.sparsity,
-        initial=args.initial,
-        jumping=args.jumping,
-        combine=args.combine,
-        diverse=args.diverse,
-        shuffle=args.shuffle
     )
     
     if args.finetune:
@@ -373,20 +372,6 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
-    
-    if args.test_speed:
-        # test model throughput for three times to ensure accuracy
-        print('Start inference speed testing...')
-        inference_speed = speed_test(model)
-        print('inference_speed (inaccurate):', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
-    if args.only_test_speed:
-        return
 
     model_ema = None
     if args.model_ema:
@@ -404,9 +389,9 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
     if not args.unscale_lr:
-        args.lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
-        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 512.0
-        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 512.0
+        args.lr = args.lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 1024.0
     # gradient accumulation also need to scale the learning rate
     if args.accumulation_steps > 1:
         args.lr = args.lr * args.accumulation_steps
@@ -425,7 +410,7 @@ def main(args):
     lr_scheduler, num_epochs = create_scheduler_v2(
         optimizer,
         **scheduler_kwargs(args),
-        updates_per_epoch=args.updates_per_epoch,
+        updates_per_epoch=args.updates_per_epoch if args.accumulation_steps > 1 else None,
     )
     
     criterion = LabelSmoothingCrossEntropy()
@@ -462,12 +447,8 @@ def main(args):
 
     # wrap the criterion in our custom DistillationLoss, which
     # just dispatches to the original criterion if args.distillation_type is 'none'
-    if args.diverse:
-        criterion = OrthogonalLoss(criterion, args.distillation_alpha)
-    else:
-        criterion = DistillationLoss(
-            criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
-        )
+    criterion = DistillationLoss(criterion, teacher_model, args.distillation_type, 
+                                 args.distillation_alpha, args.distillation_tau)
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -486,6 +467,26 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
+        
+    if args.signal_test:
+        # test model throughput for three times to ensure accuracy
+        print('Start signal speed testing...')
+        signal_test(model)
+        return
+    if args.test_speed:
+        # test model throughput for three times to ensure accuracy
+        print('Start inference speed testing...')
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        MACs = get_macs(model)
+        print('GMACs:', MACs * 1e-9)
+    if args.only_test_speed:
+        return
+    
     if args.eval:
         MACs = get_macs(model)
         print('GMACs:', MACs * 1e-9)
@@ -550,8 +551,6 @@ def main(args):
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
-        
-        
         
         
         if args.output_dir and utils.is_main_process():

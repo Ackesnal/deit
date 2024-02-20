@@ -15,6 +15,8 @@ import torch
 import torch.distributed as dist
 from timm.utils.clip_grad import dispatch_clip_grad
 
+import copy
+
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -245,13 +247,21 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, clip_mode='norm', parameters=None, create_graph=False, update_grad=True):
+    def __call__(self, loss, optimizer, clip_grad=None, clip_mode='norm', parameters=None, named_parameters=None, create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
         if update_grad:
+            """
+            for name, p in named_parameters:
+                if p.grad is not None:
+                    print(name, "mean:", p.grad)#.mean().item(), p.grad.max().item(), p.grad.min().item()) 
+            print("\n\n\n\n")
+            """
             if clip_grad is not None:
                 assert parameters is not None
                 self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
                 dispatch_clip_grad(parameters, clip_grad, mode=clip_mode)
+            
+            
             self._scaler.step(optimizer)
             self._scaler.update()
 
