@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 
-class ShuffleVisionTransformer(VisionTransformer):
+class DistilledVisionTransformer(VisionTransformer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.dist_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
@@ -52,6 +52,7 @@ class ShuffleVisionTransformer(VisionTransformer):
         x, x_dist = self.forward_features(x)
         x = self.head(x)
         x_dist = self.head_dist(x_dist)
+        x.register_hook(print_grad)
         if self.training:
             return x, x_dist
         else:
@@ -60,7 +61,7 @@ class ShuffleVisionTransformer(VisionTransformer):
 
 
 @register_model
-def deit_tiny_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+def deit_tiny_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -72,26 +73,10 @@ def deit_tiny_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
-    
-
-@register_model
-def deit_tiny_shuffle_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = ShuffleVisionTransformer(
-        patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        checkpoint = torch.hub.load_state_dict_from_url(
-            url="https://dl.fbaipublicfiles.com/deit/deit_tiny_patch16_224-a1311bcf.pth",
-            map_location="cpu", check_hash=True
-        )
-        model.load_state_dict(checkpoint["model"])
-    return model
-
 
 
 @register_model
-def deit_small_patch16_224(pretrained=False, **kwargs):
+def deit_small_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -106,7 +91,7 @@ def deit_small_patch16_224(pretrained=False, **kwargs):
 
 
 @register_model
-def deit_base_patch16_224(pretrained=False, **kwargs):
+def deit_base_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -115,13 +100,13 @@ def deit_base_patch16_224(pretrained=False, **kwargs):
         checkpoint = torch.hub.load_state_dict_from_url(
             url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
             map_location="cpu", check_hash=True
-        ) 
+        )
         model.load_state_dict(checkpoint["model"])
     return model
 
 
 @register_model
-def deit_tiny_distilled_patch16_224(pretrained=False, **kwargs):
+def deit_tiny_distilled_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = DistilledVisionTransformer(
         patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -136,7 +121,7 @@ def deit_tiny_distilled_patch16_224(pretrained=False, **kwargs):
 
 
 @register_model
-def deit_small_distilled_patch16_224(pretrained=False, **kwargs):
+def deit_small_distilled_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = DistilledVisionTransformer(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -151,7 +136,7 @@ def deit_small_distilled_patch16_224(pretrained=False, **kwargs):
 
 
 @register_model
-def deit_base_distilled_patch16_224(pretrained=False, **kwargs): 
+def deit_base_distilled_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = DistilledVisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -166,7 +151,7 @@ def deit_base_distilled_patch16_224(pretrained=False, **kwargs):
 
 
 @register_model
-def deit_base_patch16_384(pretrained=False, **kwargs):
+def deit_base_patch16_384(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = VisionTransformer(
         img_size=384, patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -181,7 +166,7 @@ def deit_base_patch16_384(pretrained=False, **kwargs):
 
 
 @register_model
-def deit_base_distilled_patch16_384(pretrained=False, **kwargs):
+def deit_base_distilled_patch16_384(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = DistilledVisionTransformer(
         img_size=384, patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
