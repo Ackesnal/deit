@@ -67,8 +67,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         idx = idx + 1
 
         torch.cuda.synchronize()
-        if idx % args.accumulation_steps == 0:
-            model.module.adaptive_gamma(args.accumulation_steps)
+        #if idx % args.accumulation_steps == 0:
+        #    model.module.adaptive_gamma(args.accumulation_steps)
             
         if model_ema is not None:
             model_ema.update(model)

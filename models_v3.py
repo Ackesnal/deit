@@ -148,7 +148,6 @@ class Mlp(nn.Module):
             B, N, C = x.shape
             ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
             # FFN in
-            layer_shortcut = x
             
             shortcut = x.repeat(1,1,4) # B, N, 4C
             self.gamma_input1_accumulation += x.std(-1, correction=0).mean().item()
@@ -167,7 +166,6 @@ class Mlp(nn.Module):
             x = torch.nn.functional.linear(x / self.gamma_input3, fc2_weight, fc2_bias)
             x = self.drop_path(x) * self.gamma3 + shortcut
             
-            #x = x * self.gamma3 + layer_shortcut
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         else:
             x = self.fc1(x)

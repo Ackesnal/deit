@@ -250,12 +250,12 @@ class NativeScalerWithGradNormCount:
     def __call__(self, loss, optimizer, clip_grad=None, clip_mode='norm', parameters=None, named_parameters=None, create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
         if update_grad:
-            """
+            
             for name, p in named_parameters:
                 if p.grad is not None:
                     print(name, "mean:", p.grad.mean().item(), p.grad.max().item(), p.grad.min().item()) 
             print("\n\n\n\n")
-            """
+            
             
             if clip_grad is not None:
                 assert parameters is not None
