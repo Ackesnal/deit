@@ -28,14 +28,17 @@ import models_v2
 import models_v3
 
 import utils
-from torchprofile import profile_macs
+from ptflops import get_model_complexity_info
+
+
 
 def get_macs(model, x=None):
-    model.eval()
-    if x is None:
-        x = torch.rand(1, 3, 224, 224).cuda()
-    macs = profile_macs(model, x)
-    return macs
+    macs, params = get_model_complexity_info(model, (3, 224, 224), print_per_layer_stat=False, as_strings=False)
+    if next(model.parameters()).get_device()==0:
+        print('{:<} {:<}{:<}'.format('Computational complexity: ', round(macs*1e-9, 2), 'GMACs'))
+        print('{:<} {:<}{:<}'.format('Number of parameters: ', round(params*1e-6, 2), 'M'))
+        print()
+
 
 
 def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
@@ -55,6 +58,7 @@ def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     speed = batchsize * ntest / elapse
 
     return speed
+
 
 
 def get_args_parser():
@@ -211,14 +215,6 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
-    parser.add_argument('--sparsity', type=float, default=1)
-    parser.add_argument('--initial', default=False, action='store_true')
-    parser.add_argument('--jumping', default=False, action='store_true')
-    parser.add_argument('--combine', default="none", choices=["none", "max", "attention", ""])
-    parser.add_argument('--diverse', default=False, action='store_true')
-    parser.add_argument('--shuffle', default=False, action='store_true')
-    
-    
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
     
@@ -305,13 +301,7 @@ def main(args):
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
-        img_size=args.input_size,
-        sparsity=args.sparsity,
-        initial=args.initial,
-        jumping=args.jumping,
-        combine=args.combine,
-        diverse=args.diverse,
-        shuffle=args.shuffle
+        img_size=args.input_size
     )
     
     if args.finetune:
@@ -383,8 +373,7 @@ def main(args):
         print('inference_speed:', inference_speed, 'images/s')
         inference_speed = speed_test(model)
         print('inference_speed:', inference_speed, 'images/s')
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
+        get_macs(model)
     if args.only_test_speed:
         return
 
@@ -404,9 +393,9 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
     if not args.unscale_lr:
-        args.lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
-        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 512.0
-        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 512.0
+        args.lr = args.lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 1024.0
     # gradient accumulation also need to scale the learning rate
     if args.accumulation_steps > 1:
         args.lr = args.lr * args.accumulation_steps
@@ -462,10 +451,7 @@ def main(args):
 
     # wrap the criterion in our custom DistillationLoss, which
     # just dispatches to the original criterion if args.distillation_type is 'none'
-    if args.diverse:
-        criterion = OrthogonalLoss(criterion, args.distillation_alpha)
-    else:
-        criterion = DistillationLoss(
+    criterion = DistillationLoss(
             criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
         )
 
@@ -487,14 +473,12 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
     if args.eval:
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
+        get_macs(model)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
     
-    MACs = get_macs(model)
-    print('Model GMACs:', MACs * 1e-9)
+    get_macs(model)
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0

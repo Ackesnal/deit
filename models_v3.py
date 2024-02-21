@@ -12,6 +12,11 @@ import math
 
 import torch.utils.checkpoint as checkpoint
 
+def make_print_grad(parameter):
+    def print_grad(grad):
+        print(f"Gradient of ({parameter}):", grad.max(), grad.min())
+    return print_grad
+
 
 
 class Mlp(nn.Module):
@@ -66,6 +71,7 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
+        #self.qkv.weight.register_hook(make_print_grad("qkv weight")) 
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
@@ -74,14 +80,7 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-        """
-        if self.sparsity < 1:
-            attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
-            attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
-            attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, N, N) # B, H, N, N
-            pad = torch.zeros((B, self.num_heads, N, N), device = attn.device) # B, H, N, N
-            attn = torch.where(attn>=attn_threshold, attn, pad) # B, H, N, N
-        """ 
+        
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -107,12 +106,8 @@ class GraphPropagationBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
     
     def forward(self, x, x_init=None):
-        if x_init is None:
-            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
-        else:
-            x = x + self.drop_path(self.ls1(self.attn(self.norm1(x)*0.9+x_init*0.1)))
-            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x)*0.9+x_init*0.1)))
+        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x.transpose(-1,-2)).transpose(-1,-2))))
+        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x.transpose(-1,-2)).transpose(-1,-2))))
         return x
 
 
@@ -146,14 +141,7 @@ class GraphPropagationTransformer(VisionTransformer):
             embed_layer=PatchEmbed,
             norm_layer=nn.LayerNorm,
             act_layer=nn.GELU,
-            block_fn=GraphPropagationBlock,
-            sparsity=1,
-            initial=False,
-            jumping=False,
-            combine="",
-            diverse=False,
-            shuffle=False,
-            pretrained_cfg_overlay=None):
+            block_fn=GraphPropagationBlock):
         
         super().__init__(
             img_size=img_size,
@@ -187,103 +175,25 @@ class GraphPropagationTransformer(VisionTransformer):
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
-                act_layer=act_layer,
-                sparsity=sparsity
+                act_layer=act_layer
             )
             for i in range(depth)])
-        
-        self.initial = initial
-        self.jumping = jumping
-        self.combine = combine
-        self.diverse = diverse
-        self.shuffle = shuffle
-        if self.combine == "attention":
-            self.out_attn_1 = nn.Linear(embed_dim, embed_dim/2)
-            self.out_act_1 = nn.GELU()
-            self.out_attn_2 = nn.Linear(embed_dim/2, embed_dim)
-            self.out_act_2 = nn.GELU()
-        
-        if self.shuffle:
-            use_fc_norm = global_pool == 'avg' if fc_norm is None else fc_norm
-            self.patch_embed = embed_layer(
-                img_size=img_size,
-                patch_size=patch_size,
-                in_chans=in_chans,
-                embed_dim=embed_dim*2,
-                bias=not pre_norm,  # disable bias if pre-norm is used (e.g. CLIP)
-            )
-            num_patches = self.patch_embed.num_patches
-    
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim*2)) if class_token else None
-            embed_len = num_patches if no_embed_class else num_patches + self.num_prefix_tokens
-            self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim*2) * .02)
-            self.pos_drop = nn.Dropout(p=drop_rate)
-            self.norm_pre = norm_layer(embed_dim*2) if pre_norm else nn.Identity()
-            self.norm = norm_layer(embed_dim*2) if not use_fc_norm else nn.Identity()
-        
-            # Classifier Head
-            self.fc_norm = norm_layer(embed_dim*2) if use_fc_norm else nn.Identity()
-            self.head = nn.Linear(self.embed_dim*2, num_classes) if num_classes > 0 else nn.Identity()
             
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
         
-        if self.initial:
-            x_init = x
-        if self.jumping:
-            x_skip = []
-        
         B, N, C = x.shape
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
-                # Pre-layer processings
-                if self.shuffle:
-                    x_half = x[:,:,x.shape[2]//2:]
-                    x = x[:,:,:x.shape[2]//2]
-                    
-                # Transformer layer
                 x = checkpoint.checkpoint(blk)
-                
-                # Post-layer processings
-                if self.initial:
-                    x = x * 0.8 + x_init * 0.2
-                if self.jumping:
-                    x_skip.append(x)
-                if self.shuffle:
-                    x = torch.cat((x, x_half), dim=-1)
-                    x = x.reshape(B, N, C//2, 2).transpose(-1,-2).reshape(B, N, C)
-                
         else:
             for i, blk in enumerate(self.blocks):
-                # Pre-layer processings
-                if self.shuffle:
-                    x_half = x[:,:,x.shape[2]//2:]
-                    x = x[:,:,:x.shape[2]//2]
-                    
-                # Transformer layer
                 x = blk(x)
-                
-                # Post-layer processings
-                if self.initial:
-                    x = x * 0.8 + x_init * 0.2
-                if self.jumping:
-                    x_skip.append(x)
-                if self.shuffle:
-                    x = torch.cat((x, x_half), dim=-1)
-                    x = x.reshape(B, N, 2, C//2).transpose(-1,-2).reshape(B, N, C)
-                    
-        if self.jumping:
-            if self.combine == "max":
-                x = torch.stack(x_skip, dim=-1) # B, N, C, L
-                x = torch.max(x, dim=-1)[0] # B, N, C, L
-            if self.combine == "attention":
-                pass
-        
         x = self.norm(x)
         return x
-
+        
     def forward_head(self, x, pre_logits: bool = False):
         if self.global_pool:
             x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
@@ -292,47 +202,14 @@ class GraphPropagationTransformer(VisionTransformer):
 
     def forward(self, x):
         x = self.forward_features(x)
-        if self.diverse and self.training:
-            tokens = x[:,1:,:]
-            x = self.forward_head(x)
-            return x, tokens
-        else:
-            x = self.forward_head(x)
-            return x
+        x = self.forward_head(x)
+        return x
         
         
         
 @register_model
-def graph_propagation_deit_small_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
+def BN_deit_small_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=12,
                                         num_heads=6, mlp_ratio=4, qkv_bias=True,
-                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-    
-@register_model
-def graph_propagation_deit_small_patch16_224_layer18(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=18,
-                                        num_heads=6, mlp_ratio=4, qkv_bias=True,
-                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-    
-@register_model
-def graph_propagation_deit_small_patch16_224_layer24(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=24,
-                                        num_heads=6, mlp_ratio=4, qkv_bias=True,
-                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-    
-@register_model
-def graph_propagation_deit_small_patch16_224_layer30(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=30,
-                                        num_heads=6, mlp_ratio=4, qkv_bias=True,
-                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    return model
-    
-@register_model
-def graph_propagation_deit_small_patch16_224_layer36(pretrained=False, pretrained_cfg=None, **kwargs):
-    model = GraphPropagationTransformer(patch_size=16, embed_dim=384, depth=36,
-                                        num_heads=6, mlp_ratio=4, qkv_bias=True,
-                                        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+                                        norm_layer=partial(nn.BatchNorm1d, eps=1e-6), **kwargs)
     return model
