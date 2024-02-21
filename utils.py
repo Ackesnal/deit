@@ -253,15 +253,24 @@ class NativeScalerWithGradNormCount:
             """
             for name, p in named_parameters:
                 if p.grad is not None:
-                    print(name, "mean:", p.grad)#.mean().item(), p.grad.max().item(), p.grad.min().item()) 
+                    print(name, "mean:", p.grad.mean().item(), p.grad.max().item(), p.grad.min().item()) 
             print("\n\n\n\n")
             """
+            
             if clip_grad is not None:
                 assert parameters is not None
                 self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
                 dispatch_clip_grad(parameters, clip_grad, mode=clip_mode)
+            else:
+                assert parameters is not None
+                self._scaler.unscale_(optimizer)
             
-            
+            """
+            for name, p in named_parameters:
+                if p.grad is not None:
+                    print(name, "mean:", p.grad.mean().item(), p.grad.max().item(), p.grad.min().item()) 
+            print("\n\n\n\n")
+            """
             self._scaler.step(optimizer)
             self._scaler.update()
 

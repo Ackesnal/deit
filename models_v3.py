@@ -14,8 +14,11 @@ import torch.autograd.profiler as profiler
 import torch.utils.checkpoint as checkpoint
 
 
-def print_grad(grad):
-    print("Gradient:", grad)
+def make_print_grad(parameter):
+    def print_grad(grad):
+        print(f"Gradient of ({parameter}):", grad.max(), grad.min())
+    return print_grad
+
     
 
 def stadardization(W, dim_in, num_head, dim_head):
@@ -34,11 +37,15 @@ def stadardization(W, dim_in, num_head, dim_head):
         # Conv weights
         k = W.shape[-1] # kernel size
         W = W.reshape(dim_in, -1)
-         
+    
+    #W.register_hook(make_print_grad("W before standardization")) 
+        
     mean = W.mean(dim=-1, keepdim=True)
     std = W.std(dim=-1, keepdim=True, correction=0)
-    scale = std*((dim_head*num_head)**0.5) + 1e-9
+    scale = std*((dim_head)**0.5) + 1e-9
     W = (W - mean) / scale
+    
+    #W.register_hook(make_print_grad("W after standardization"))
         
     if num_dim == 1:
         W = W.reshape(num_head * dim_head)
@@ -99,18 +106,18 @@ class Mlp(nn.Module):
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
-        self.gamma_input1 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
-        self.gamma_input2 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
-        self.gamma_input3 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
+        self.gamma_input1 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
+        self.gamma_input2 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
+        self.gamma_input3 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
         self.gamma_input1_accumulation = 0
         self.gamma_input2_accumulation = 0
         self.gamma_input3_accumulation = 0
         
-        self.gamma1 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma1 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma1_accumulation = 0
-        self.gamma2 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma2 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma2_accumulation = 0
-        self.gamma3 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma3 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma3_accumulation = 0
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
@@ -141,23 +148,26 @@ class Mlp(nn.Module):
             B, N, C = x.shape
             ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
             # FFN in
+            layer_shortcut = x
             
-            shortcut = x.repeat(1, 1, 4) # B, N, 4C
-            self.gamma_input1_accumulation = x.std(-1, correction=0).mean().item()
+            shortcut = x.repeat(1,1,4) # B, N, 4C
+            self.gamma_input1_accumulation += x.std(-1, correction=0).mean().item()
             x = torch.nn.functional.linear(x / self.gamma_input1, fc1_weight, fc1_bias)
             x = self.drop_path(x) * self.gamma1 + shortcut
             
             # Activation
             shortcut = x
-            self.gamma_input2_accumulation = x.std(-1, correction=0).mean().item()
+            self.gamma_input2_accumulation += x.std(-1, correction=0).mean().item()
             x = self.act(x / self.gamma_input2) - 0.5
             x = self.drop_path(x) * self.gamma2 + shortcut
             
             # FFN out
-            shortcut = x.reshape(B, N, 4, C).mean(-2)
-            self.gamma_input3_accumulation = x.std(-1, correction=0).mean().item()
+            shortcut = x[:,:,:C]
+            self.gamma_input3_accumulation += x.std(-1, correction=0).mean().item()
             x = torch.nn.functional.linear(x / self.gamma_input3, fc2_weight, fc2_bias)
             x = self.drop_path(x) * self.gamma3 + shortcut
+            
+            #x = x * self.gamma3 + layer_shortcut
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         else:
             x = self.fc1(x)
@@ -166,9 +176,10 @@ class Mlp(nn.Module):
         return x
         
     def adaptive_gamma(self, steps):
-        self.gamma_input1 = nn.Parameter(torch.ones((1), device=self.gamma_input1.device)*(self.gamma_input1_accumulation/steps+1), requires_grad=False)
-        self.gamma_input2 = nn.Parameter(torch.ones((1), device=self.gamma_input2.device)*(self.gamma_input2_accumulation/steps+1), requires_grad=False)
-        self.gamma_input3 = nn.Parameter(torch.ones((1), device=self.gamma_input3.device)*(self.gamma_input3_accumulation/steps+1), requires_grad=False)
+        self.gamma_input1 = nn.Parameter(self.gamma_input1*0.8+(self.gamma_input1_accumulation/steps)*0.2, requires_grad=False)
+        self.gamma_input2 = nn.Parameter(self.gamma_input2*0.8+(self.gamma_input2_accumulation/steps)*0.2, requires_grad=False)
+        self.gamma_input3 = nn.Parameter(self.gamma_input3*0.8+(self.gamma_input3_accumulation/steps)*0.2, requires_grad=False)
+        # print("mlp gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
         self.gamma_input1_accumulation = 0
         self.gamma_input2_accumulation = 0
         self.gamma_input3_accumulation = 0
@@ -224,18 +235,18 @@ class Attention(nn.Module):
         #################### ↑↑↑ Output Linear ↑↑↑ ####################
         
         #################### ↓↓↓ Shortcut scale ↓↓↓ ###################
-        self.gamma_input1 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
-        self.gamma_input2 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
-        self.gamma_input3 = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
+        self.gamma_input1 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
+        self.gamma_input2 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
+        self.gamma_input3 = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
         self.gamma_input1_accumulation = 0
         self.gamma_input2_accumulation = 0
         self.gamma_input3_accumulation = 0
         
-        self.gamma1 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma1 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma1_accumulation = 0
-        self.gamma2 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma2 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma2_accumulation = 0
-        self.gamma3 = 0.4 # nn.Parameter(torch.zeros(1))
+        self.gamma3 = 1 # nn.Parameter(torch.zeros(1))
         self.gamma3_accumulation = 0
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
@@ -262,11 +273,11 @@ class Attention(nn.Module):
             ########### ↓↓↓ Self-attention ↓↓↓ ############
             # V's shortcut
             shortcut = x
-            self.gamma_input1_accumulation = x.std(-1, correction=0).mean().item()
+            self.gamma_input1_accumulation += x.std(-1, correction=0).mean().item()
                 
             # Calculate Query (Q), Key (K) and Value (V)
             q = torch.nn.functional.linear(x / self.gamma_input1, q_weight, q_bias) # B, N, C
-            k = torch.nn.functional.linear(x / self.gamma_input1, k_weight, k_bias) # B, N, C
+            k = torch.nn.functional.linear(x, k_weight, k_bias) # B, N, C
             v = torch.nn.functional.linear(x / self.gamma_input1, v_weight, v_bias) # B, N, C
                 
             # Add shortcut and droppath to V
@@ -279,7 +290,7 @@ class Attention(nn.Module):
                 
             # Attended x's shortcut
             shortcut = v # B, nh, N, C//nh
-            self.gamma_input2_accumulation = v.std(-1, correction=0).mean().item()
+            self.gamma_input2_accumulation += v.std(-1, correction=0).mean().item()
             
             # Calculate attention map
             attn = q @ k # B, nh, N, N
@@ -299,7 +310,7 @@ class Attention(nn.Module):
             ########## ↓↓↓ Linear projection ↓↓↓ ##########
             # Linear projection
             shortcut = x # B, N, C
-            self.gamma_input3_accumulation = x.std(-1, correction=0).mean().item()
+            self.gamma_input3_accumulation += x.std(-1, correction=0).mean().item()
             
             x = torch.nn.functional.linear(x / self.gamma_input3, proj_weight, proj_bias) # B, N, C
             
@@ -308,7 +319,7 @@ class Attention(nn.Module):
             ########## ↑↑↑ Linear projection ↑↑↑ ##########
             
             #if display and x.get_device() == 0:# and self.v_weight.grad is not None:
-                #print(self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
+                #print("mhsa gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
                 #print("x:", x.var(-1).mean(), x.mean(), x.max(), x.min())
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
                 #print("V:", v_bias)
@@ -320,9 +331,10 @@ class Attention(nn.Module):
             return x
     
     def adaptive_gamma(self, steps):
-        self.gamma_input1 = nn.Parameter(torch.ones((1), device=self.gamma_input1.device)*(self.gamma_input1_accumulation/steps+1), requires_grad=False)
-        self.gamma_input2 = nn.Parameter(torch.ones((1), device=self.gamma_input2.device)*(self.gamma_input2_accumulation/steps+1), requires_grad=False)
-        self.gamma_input3 = nn.Parameter(torch.ones((1), device=self.gamma_input3.device)*(self.gamma_input3_accumulation/steps+1), requires_grad=False)
+        self.gamma_input1 = nn.Parameter(self.gamma_input1*0.8+(self.gamma_input1_accumulation/steps)*0.2, requires_grad=False)
+        self.gamma_input2 = nn.Parameter(self.gamma_input2*0.8+(self.gamma_input2_accumulation/steps)*0.2, requires_grad=False)
+        self.gamma_input3 = nn.Parameter(self.gamma_input3*0.8+(self.gamma_input3_accumulation/steps)*0.2, requires_grad=False)
+        #print("mhsa gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
         self.gamma_input1_accumulation = 0
         self.gamma_input2_accumulation = 0
         self.gamma_input3_accumulation = 0
@@ -426,7 +438,7 @@ class NFTransformer(VisionTransformer):
         self.norm = None
         self.head.weight.requires_grad_(False)
         self.head.bias.requires_grad_(False)
-        self.gamma = nn.Parameter(torch.ones((1)) * 10, requires_grad=False)
+        self.gamma = nn.Parameter(torch.ones((1)) * 50, requires_grad=False)
         self.gamma_accumulation = 0
             
     def forward_features(self, x):
@@ -438,7 +450,8 @@ class NFTransformer(VisionTransformer):
         x = self.norm_pre(x)
         x = x.reshape(B, N, C)
         
-        for blk in self.blocks:
+        for i, blk in enumerate(self.blocks):
+            #x.register_hook(make_print_grad("x of layer "+str(i)))
             x = blk(x)
             
         # x = self.norm(x)
@@ -461,20 +474,21 @@ class NFTransformer(VisionTransformer):
     def forward(self, x):
         x = self.forward_features(x)
         x = self.forward_head(x)
-        x.register_hook(print_grad)
+        #x.register_hook(make_print_grad("x"))
         return x
         
     def _init_standard_weights(self):
         for name, param in self.named_parameters():
             if "_weight" in name:
-                nn.init.trunc_normal_(param, std=1, a=-2, b=2)
+                nn.init.trunc_normal_(param, std=.1, a=-2, b=2)
             elif "_bias" in name:
-                #trunc_normal_(param, std=.1)
-                nn.init.trunc_normal_(param, std=1, a=-2, b=2)
+                nn.init.trunc_normal_(param, std=.1, a=-2, b=2)
                 #nn.init.zeros_(param)
                 
     def adaptive_gamma(self, steps):
-        self.gamma = nn.Parameter(torch.ones((1), device=self.gamma.device)*(self.gamma_accumulation/steps+1), requires_grad=False)
+        self.gamma = nn.Parameter(self.gamma*0.8+(self.gamma_accumulation/steps)*0.2, requires_grad=False)
+        self.gamma_accumulation = 0
+        #print("output gamma:", self.gamma.data)
         for blk in self.blocks:
             blk.adaptive_gamma(steps)
         
