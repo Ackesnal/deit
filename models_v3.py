@@ -442,8 +442,11 @@ class NFTransformer(VisionTransformer):
         x = x.reshape(B, N, C)
         
         for i, blk in enumerate(self.blocks):
-            #x.register_hook(make_print_grad("x of layer "+str(i)))
-            x = ckpt.checkpoint(blk, x)
+            if self.training:
+                #x.register_hook(make_print_grad("x of layer "+str(i)))
+                x = ckpt.checkpoint(blk, x)
+            else:
+                x = blk(x)
             
         return x
     
