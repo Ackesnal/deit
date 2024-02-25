@@ -11,7 +11,7 @@ from timm.layers import trunc_normal_, PatchEmbed, DropPath
 from timm.layers.helpers import to_2tuple
 import math
 import torch.autograd.profiler as profiler
-import torch.utils.checkpoint as checkpoint
+import torch.utils.checkpoint as ckpt
 
 
 def make_print_grad(parameter):
@@ -443,7 +443,7 @@ class NFTransformer(VisionTransformer):
         
         for i, blk in enumerate(self.blocks):
             #x.register_hook(make_print_grad("x of layer "+str(i)))
-            x = blk(x)
+            x = ckpt.checkpoint(blk, x)
             
         return x
     
