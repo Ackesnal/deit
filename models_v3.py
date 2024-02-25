@@ -41,8 +41,8 @@ def stadardization(W, dim_in, num_head, dim_head):
     #W.register_hook(make_print_grad("W before standardization")) 
         
     mean = W.mean(dim=-1, keepdim=True)
-    std = W.std(dim=-1, keepdim=True, correction=0)
-    scale = std*((dim_head)**0.5) + 1e-9
+    std = W.std(dim=-1, keepdim=True)
+    scale = std*((dim_head)**0.5) + 1e-6
     W = (W - mean) / scale
     
     #W.register_hook(make_print_grad("W after standardization"))
@@ -106,17 +106,18 @@ class Mlp(nn.Module):
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
-        self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
-        self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
-        self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
+        self.shortcut_gain1 = nn.Parameter(torch.ones((1))*1e-2)
+        self.shortcut_gain2 = nn.Parameter(torch.ones((1))*1e-2)
+        self.shortcut_gain3 = nn.Parameter(torch.ones((1))*1e-2)
+        self.expansion_ratio = nn.Parameter(torch.ones((1)) * 8)
         
         self.gamma_fc1 = nn.Parameter(torch.ones(1, self.dim_in))
         self.gamma_fc2 = nn.Parameter(torch.ones(1, self.dim_hidden))
         
         self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_1_accumulation = 1
+        self.std_1_accumulation = nn.Parameter(torch.ones((1)), requires_grad=False)
         self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_2_accumulation = 1
+        self.std_2_accumulation = nn.Parameter(torch.ones((1)), requires_grad=False)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         # Drop path
@@ -139,29 +140,31 @@ class Mlp(nn.Module):
             
             ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
             # FFN in
-            self.std_1_accumulation = self.std_1_accumulation * 0.9 + x.std(-1, correction=0).mean().item() * 0.1
-            shortcut = x.repeat(1,1,4) # B, N, 4
-            x = torch.nn.functional.linear(x/self.std_1, fc1_weight, self.fc1_bias)
-            x = self.drop_path(x) * self.shortcut_gain1 + shortcut
+            self.std_1_accumulation.data = self.std_1_accumulation * 0.9 + x.std(-1).mean() * 0.1
+            shortcut = x.repeat(1, 1, self.dim_hidden//C) # B, N, 4C
+            x = torch.nn.functional.linear(x/self.std_1, fc1_weight, self.fc1_bias) # B, N, 4C
+            x = self.drop_path(x) * torch.abs(self.shortcut_gain1) + shortcut # B, N, 4C
             
             # Activation
-            shortcut = x
-            x = self.act(x) - 0.5
-            x = self.drop_path(x) * self.shortcut_gain2 + shortcut
-            
+            shortcut = x # B, N, 4C
+            x = (self.act(x) - 0.5) * self.expansion_ratio # B, N, 4C
+            x = self.drop_path(x) * torch.abs(self.shortcut_gain2) + shortcut # B, N, 4C
+                
             # FFN out
-            self.std_2_accumulation = self.std_2_accumulation * 0.9 + x.std(-1, correction=0).mean().item() * 0.1
-            shortcut = x[:,:,:C]
+            self.std_2_accumulation.data = self.std_2_accumulation * 0.9 + x.std(-1).mean() * 0.1
+            shortcut = x.reshape(B, N, -1, C).mean(2)
             x = torch.nn.functional.linear(x/self.std_2, fc2_weight, self.fc2_bias)
-            x = self.drop_path(x) * self.shortcut_gain3 + shortcut
+            x = self.drop_path(x) * torch.abs(self.shortcut_gain3) + shortcut
             
+            #if x.get_device() == 0:
+                #print("x after ffn_out:", x.var(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         return x
         
     def adaptive_gamma(self, steps):
-        self.std_1 = nn.Parameter(torch.ones((1), device=self.std_1.device)*self.std_1_accumulation, requires_grad=False)
-        self.std_2 = nn.Parameter(torch.ones((1), device=self.std_2.device)*self.std_2_accumulation, requires_grad=False)
-        
+        self.std_1 = self.std_1_accumulation
+        self.std_2 = self.std_2_accumulation
+        #print(self.std_1.data, self.std_2.data)
         
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
@@ -213,9 +216,9 @@ class Attention(nn.Module):
         #################### ↑↑↑ Output Linear ↑↑↑ ####################
         
         #################### ↓↓↓ Shortcut scale ↓↓↓ ###################
-        self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
-        self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
-        self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
+        self.shortcut_gain1 = nn.Parameter(torch.ones((1))*1e-2)
+        self.shortcut_gain2 = nn.Parameter(torch.ones((1))*1e-2)
+        self.shortcut_gain3 = nn.Parameter(torch.ones((1))*1e-2)
         
         self.gamma_q = nn.Parameter(torch.ones(1, dim))
         self.gamma_k = nn.Parameter(torch.ones(1, dim))
@@ -223,9 +226,9 @@ class Attention(nn.Module):
         self.gamma_f = nn.Parameter(torch.ones(1, dim))
         
         self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_1_accumulation = 1
+        self.std_1_accumulation = nn.Parameter(torch.ones((1)), requires_grad=False)
         self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_2_accumulation = 1
+        self.std_2_accumulation = nn.Parameter(torch.ones((1)), requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         # Drop path
@@ -233,6 +236,7 @@ class Attention(nn.Module):
         
     def forward(self, x, display=False):
         if True: #self.training:
+            #print(torch.abs(self.shortcut_gain1).item(), torch.abs(self.shortcut_gain2).item(), torch.abs(self.shortcut_gain3).item())
             B, N, C = x.shape
             ####################### ↓↓↓ Standardization ↓↓↓ #######################
             q_weight = stadardization(self.q_weight, 
@@ -254,7 +258,7 @@ class Attention(nn.Module):
             ####################### ↓↓↓ Self-attention ↓↓↓ ########################
             # Shortcut and update std_1
             shortcut = x
-            self.std_1_accumulation = self.std_1_accumulation * 0.9 + x.std(-1, correction=0).mean().item() * 0.1
+            self.std_1_accumulation.data = self.std_1_accumulation * 0.9 + x.std(-1).mean() * 0.1
             
             # Calculate Query (Q), Key (K) and Value (V)
             q = torch.nn.functional.linear(x/self.std_1, q_weight, self.q_bias) # B, N, C
@@ -262,7 +266,7 @@ class Attention(nn.Module):
             v = torch.nn.functional.linear(x/self.std_1, v_weight, self.v_bias) # B, N, C
             
             # Add shortcut and droppath to V
-            v = self.drop_path(v) * self.shortcut_gain1 + shortcut # B, N, C
+            v = self.drop_path(v) * torch.abs(self.shortcut_gain1) + shortcut # B, N, C
             
             # Reshape Query (Q), Key (K) and Value (V)
             q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
@@ -280,7 +284,7 @@ class Attention(nn.Module):
             x = attn @ v # B, nh, N, C//nh
             
             # Add shortcut and droppath to attended x
-            x = self.drop_path(x) * self.shortcut_gain2 + shortcut # B, nh, N, C//nh
+            x = self.drop_path(x) * torch.abs(self.shortcut_gain2) + shortcut # B, nh, N, C//nh
             
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, nh, N, C//nh
@@ -296,13 +300,13 @@ class Attention(nn.Module):
             ###################### ↓↓↓ Linear projection ↓↓↓ ######################
             # Shortcut
             shortcut = x # B, N, C
-            self.std_2_accumulation = self.std_2_accumulation * 0.9 + x.std(-1, correction=0).mean().item() * 0.1
+            self.std_2_accumulation.data = self.std_2_accumulation.data * 0.9 + x.std(-1).mean() * 0.1
             
             # Linear projection
             x = torch.nn.functional.linear(x/self.std_2, proj_weight, self.proj_bias) # B, N, C
             
             # Add shortcut and droppath to output
-            x = self.drop_path(x) * self.shortcut_gain3 + shortcut # B, N, C
+            x = self.drop_path(x) * torch.abs(self.shortcut_gain3) + shortcut # B, N, C
             ###################### ↑↑↑ Linear projection ↑↑↑ ######################
             
             #if display and x.get_device() == 0:# and self.v_weight.grad is not None:
@@ -318,8 +322,9 @@ class Attention(nn.Module):
             return x
     
     def adaptive_gamma(self, steps):
-        self.std_1 = nn.Parameter(torch.ones((1), device=self.std_1.device)*self.std_1_accumulation, requires_grad=False)
-        self.std_2 = nn.Parameter(torch.ones((1), device=self.std_2.device)*self.std_2_accumulation, requires_grad=False)
+        self.std_1 = self.std_1_accumulation
+        self.std_2 = self.std_2_accumulation
+        #print(self.std_1.data, self.std_2.data)
         
         
 
@@ -417,7 +422,7 @@ class NFTransformer(VisionTransformer):
         self.norm = None
         
         self.std_head = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_head_accumulation = 1
+        self.std_head_accumulation = nn.Parameter(torch.ones((1)), requires_grad=False)
         self.gamma_head = nn.Parameter(torch.ones(1, embed_dim))
         self.head_weight = nn.Parameter(torch.rand((embed_dim, num_classes)))
         self.head_bias = nn.Parameter(torch.zeros((num_classes)))
@@ -455,29 +460,31 @@ class NFTransformer(VisionTransformer):
                                          num_head=1, 
                                          dim_head=1000) * self.gamma_head
             
-            self.std_head_accumulation = self.std_head_accumulation * 0.9 + x.std(-1, correction=0).mean().item() * 0.1
+            self.std_head_accumulation.data = self.std_head_accumulation * 0.9 + x.std(-1, correction=0).mean() * 0.1
             x = torch.nn.functional.linear(x/self.std_head, head_weight, self.head_bias) # B, N, C
             return x
 
     def forward(self, x):
         x = self.forward_features(x)
         #if x.get_device() == 0:
-             #print("x:", x.var(-1, correction=0).mean().item(), x.mean().item(), x.max().item(), x.min().item())
+             #print("x before out:", x.var(-1, correction=0).mean().item(), x.mean().item(), x.max().item(), x.min().item())
         x = self.forward_head(x)
+        #if x.get_device() == 0:
+             #print("x after out", x.var(-1, correction=0).mean().item(), x.mean().item(), x.max().item(), x.min().item())
         #x.register_hook(make_print_grad("x"))
         return x
         
     def _init_standard_weights(self):
         for name, param in self.named_parameters():
             if "_weight" in name:
-                nn.init.xavier_normal_(param)
-                #nn.init.trunc_normal_(param, std=.1, a=-2, b=2)
+                for dim in range(param.shape[1]):
+                    nn.init.trunc_normal_(param[:, dim], mean=0.0, std=.1, a=-2, b=2)
             elif "_bias" in name:
-                #nn.init.trunc_normal_(param, std=.1, a=-2, b=2)
                 nn.init.zeros_(param)
                 
     def adaptive_gamma(self, steps):
-        self.std_head = nn.Parameter(torch.ones((1), device=self.std_head.device)*self.std_head_accumulation, requires_grad=False)
+        self.std_head = self.std_head_accumulation
+        #print(self.std_head.data)
         for blk in self.blocks:
             blk.adaptive_gamma(steps)
             

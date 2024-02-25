@@ -74,7 +74,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         
         #if idx % (2*args.accumulation_steps) == 0:
-            # update gamma
+        # update gamma
         model.module.adaptive_gamma(1)
     
     # gather the stats from all processes
