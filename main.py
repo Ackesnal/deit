@@ -228,6 +228,11 @@ def get_args_parser():
     parser.add_argument('--only_test_speed', action='store_true')     
     
     parser.add_argument('--signal_test', action='store_true')
+    
+    # NFViT Ablation Augments
+    parser.add_argument('--shortcut_type', default='PerLayer', type=str, choices=['PerLayer', 'PerOperation'])
+    parser.add_argument('--affected_layers', default='None', type=str, choices=['None', 'Both', 'MHSA', 'FFN'])
+    parser.add_argument('--weight_standardization', default=False, action='store_true')
     return parser
 
 
@@ -311,6 +316,9 @@ def main(args):
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
+        shortcut_type=args.shortcut_type,
+        affected_layers=args.affected_layers,
+        weight_standardization=args.weight_standardization
     )
     
     if args.finetune:

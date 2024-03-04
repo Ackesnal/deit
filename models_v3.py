@@ -7,11 +7,36 @@ from einops import rearrange, reduce
 
 from timm.models.vision_transformer import VisionTransformer, _cfg
 from timm.models._registry import register_model
-from timm.layers import trunc_normal_, PatchEmbed, DropPath
+from timm.layers import trunc_normal_, PatchEmbed
 from timm.layers.helpers import to_2tuple
 import math
 import torch.autograd.profiler as profiler
 import torch.utils.checkpoint as ckpt
+
+
+class CustomizedDropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
+    """
+    def __init__(self, drop_prob=None, scale_by_keep=True):
+        super(CustomizedDropPath, self).__init__()
+        self.drop_prob = drop_prob
+        self.scale_by_keep = scale_by_keep
+    
+    def forward(self, x, origin):
+        if self.drop_prob == 0. or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+        random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
+        if keep_prob > 0.0 and self.scale_by_keep:
+            random_tensor.div_(keep_prob)
+        
+        if origin is None:
+            return x * random_tensor
+        else:
+            assert origin.shape==x.shape
+            return x * random_tensor + origin * (1 - random_tensor)
+
 
 
 def make_print_grad(parameter):
@@ -21,7 +46,7 @@ def make_print_grad(parameter):
 
     
 
-def stadardization(W, dim_in, num_head, dim_head):
+def standardization(W, dim_in, num_head, dim_head):
     num_dim = len(W.shape)
     if num_dim == 0 or W.requires_grad == False:
         return W
@@ -68,12 +93,13 @@ class Mlp(nn.Module):
             dim_hidden=None,
             dim_out=None,
             num_head=8,
-            act_layer=nn.Sigmoid,
+            act_layer=nn.GELU,
             bias=True,
             use_conv=False,
             drop=0.,
             drop_path=0.,
-            layer=0
+            shortcut_type='PerLayer',
+            weight_standardization=False
     ):
         super().__init__()
         # Hyperparameters
@@ -81,6 +107,8 @@ class Mlp(nn.Module):
         self.dim_hidden = dim_hidden or dim_in
         self.dim_out = dim_out or dim_in
         self.num_head = num_head
+        self.shortcut_type = shortcut_type
+        self.weight_standardization = weight_standardization
         
         ############################ ↓↓↓ 2-layer MLP ↓↓↓ ###########################
         # Take place
@@ -107,59 +135,88 @@ class Mlp(nn.Module):
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
-        #self.shortcut_gain1 = nn.Parameter(torch.ones((1)) * 100)
-        #self.shortcut_gain2 = nn.Parameter(torch.ones((1)) * 100)
-        #self.shortcut_gain3 = nn.Parameter(torch.ones((1)) * 100)
-        self.expansion_ratio = nn.Parameter(torch.ones((1)) * 8)
+        self.shortcut_type = shortcut_type
+        if self.shortcut_type == "PerOperation":
+            self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
+        #self.expansion_ratio = nn.Parameter(torch.ones((1)) * 8)
         
         #self.gamma_fc1 = nn.Parameter(torch.ones(1, self.dim_in))
         #self.gamma_fc2 = nn.Parameter(torch.ones(1, self.dim_hidden))
         
-        self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
-        self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
+        #self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
+        #self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
+        #self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
+        #self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         # Drop path
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = CustomizedDropPath(drop_path) if drop_path > 0. else None
 
     def forward(self, x):
         if True:
             B, N, C = x.shape
             ###################### ↓↓↓ Standardization ↓↓↓ ######################
-            """
-            fc1_weight = stadardization(self.fc1_weight, 
-                                        dim_in = self.dim_in, 
-                                        num_head = self.num_head, 
-                                        dim_head = self.dim_hidden//self.num_head) * self.gamma_fc1
-                                        
-            fc2_weight = stadardization(self.fc2_weight, 
-                                        dim_in = self.dim_hidden, 
-                                        num_head = self.num_head,
-                                        dim_head = self.dim_out//self.num_head) * self.gamma_fc2
-            """
+            if self.weight_standardization:
+                fc1_weight = standardization(self.fc1_weight, 
+                                             dim_in = self.dim_in, 
+                                             num_head = self.num_head, 
+                                             dim_head = self.dim_hidden//self.num_head) * self.gamma_fc1
+                                            
+                fc2_weight = standardization(self.fc2_weight, 
+                                             dim_in = self.dim_hidden, 
+                                             num_head = self.num_head,
+                                             dim_head = self.dim_out//self.num_head) * self.gamma_fc2
+            else:
+                fc1_weight = self.fc1_weight.T
+                fc2_weight = self.fc2_weight.T
+            
             ###################### ↑↑↑ Standardization ↑↑↑ ######################
             
             ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
-            # FFN in
-            #self.std_1_accumulation.data = self.std_1_accumulation + x.std(-1).mean()
-            shortcut = x #.repeat(1, 1, self.dim_hidden//C) # B, N, 4C
-            x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
-            x = torch.nn.functional.linear(x, self.fc1_weight.T, self.fc1_bias) # B, N, 4C
-            #x = self.drop_path(x) * nn.functional.sigmoid(self.shortcut_gain1) * 0.5 + shortcut # B, N, 4C
-            
-            # Activation
-            #shortcut = x # B, N, 4C
-            x = (self.act(x) - 0.5) * self.expansion_ratio # B, N, 4C
-            #x = self.drop_path(x) * nn.functional.sigmoid(self.shortcut_gain2) * 0.5 + shortcut # B, N, 4C
+            if self.shortcut_type == "PerLayer": # Per-layer shortcut
+                # Shortcut
+                shortcut = x # B, N, C
                 
-            # FFN out
-            #self.std_2_accumulation.data = self.std_2_accumulation + x.std(-1).mean()
-            #shortcut = x.reshape(B, N, -1, C).mean(2)
-            x = torch.nn.functional.linear(x, self.fc2_weight.T, self.fc2_bias)
-            #x = self.drop_path(x) * nn.functional.sigmoid(self.shortcut_gain3) * 0.5 + shortcut
-            x = self.drop_path(x) + shortcut
+                # Feature normalization
+                x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True) 
+                
+                # FFN in
+                x = torch.nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
+                
+                # Activation
+                x = self.act(x) # B, N, 4C
+                  
+                # FFN out
+                x = torch.nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
+                
+                # Add DropPath and shortcut
+                x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut
+                
+            elif self.shortcut_type == "PerOperation": # Per-operation shortcut
+                # Layer
+                droppath_shortcut = x
+                
+                # FFN in
+                shortcut = x.repeat(1,1,4) # B, N, 4C
+                x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True) # B, N, C
+                x = torch.nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
+                x = x * self.shortcut_gain1 + shortcut # B, N, 4C
+                
+                # Activation
+                shortcut = x # B, N, 4C
+                x = self.act(x) # B, N, 4C
+                x = x * self.shortcut_gain2 + shortcut # B, N, 4C
+                    
+                # FFN out
+                shortcut = x.reshape(B, N, -1, C).mean(2) # B, N, C
+                x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True) # B, N, 4C
+                x = torch.nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
+                x = x * self.shortcut_gain3 + shortcut # B, N, C
+                
+                # Add DropPath
+                x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         return x
         
@@ -172,7 +229,16 @@ class Mlp(nn.Module):
         
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-    def __init__(self, dim, num_head=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., drop_path=0., layer=0):
+    def __init__(self, 
+                 dim, 
+                 num_head=8, 
+                 qkv_bias=False, 
+                 qk_scale=None, 
+                 attn_drop=0., 
+                 proj_drop=0., 
+                 drop_path=0., 
+                 shortcut_type='PerLayer',
+                 weight_standardization=False):
         super().__init__()
         
         #################### ↓↓↓ Self Attention ↓↓↓ ###################
@@ -181,6 +247,7 @@ class Attention(nn.Module):
         self.dim_head = dim // num_head
         self.dim_in = dim
         self.scale = qk_scale or self.dim_head ** -0.5 # scale
+        self.weight_standardization = weight_standardization
         
         # Attention drop
         self.attn_drop = nn.Dropout(attn_drop)
@@ -220,104 +287,138 @@ class Attention(nn.Module):
         #################### ↑↑↑ Output Linear ↑↑↑ ####################
         
         #################### ↓↓↓ Shortcut scale ↓↓↓ ###################
-        #self.shortcut_gain1 = nn.Parameter(torch.ones((1)) * 100)
-        #self.shortcut_gain2 = nn.Parameter(torch.ones((1)) * 100)
-        #self.shortcut_gain3 = nn.Parameter(torch.ones((1)) * 100)
+        self.shortcut_type = shortcut_type
+        if self.shortcut_type == "PerOperation":
+            self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
         
         #self.gamma_q = nn.Parameter(torch.ones(1, dim))
         #self.gamma_k = nn.Parameter(torch.ones(1, dim))
         #self.gamma_v = nn.Parameter(torch.ones(1, dim))
         #self.gamma_f = nn.Parameter(torch.ones(1, dim))
         
-        self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
-        self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
+        #self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
+        #self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
+        #self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
+        #self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         # Drop path
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = CustomizedDropPath(drop_path) if drop_path > 0. else None
         
     def forward(self, x):
         if True: #self.training:
             B, N, C = x.shape
             ####################### ↓↓↓ Standardization ↓↓↓ #######################
-            """
-            q_weight = stadardization(self.q_weight, 
-                                      dim_in=self.dim_in, 
-                                      num_head=self.num_head, 
-                                      dim_head=self.dim_head) * self.gamma_q
-                                      
-            k_weight = stadardization(self.k_weight, 
-                                      dim_in=self.dim_in, 
-                                      num_head=self.num_head, 
-                                      dim_head=self.dim_head) * self.gamma_k
-                                      
-            v_weight = stadardization(self.v_weight, 
-                                      dim_in=self.dim_in, 
-                                      num_head=self.num_head, 
-                                      dim_head=self.dim_head) * self.gamma_v
-                                      
-            proj_weight = stadardization(self.proj_weight, 
-                                         dim_in=self.dim_in,
-                                         num_head=self.num_head,
-                                         dim_head=self.dim_head) * self.gamma_f
-            """
+            if self.weight_standardization:
+                q_weight = standardization(self.q_weight, 
+                                           dim_in=self.dim_in, 
+                                           num_head=self.num_head, 
+                                           dim_head=self.dim_head) * self.gamma_q
+                                          
+                k_weight = standardization(self.k_weight, 
+                                           dim_in=self.dim_in, 
+                                           num_head=self.num_head, 
+                                           dim_head=self.dim_head) * self.gamma_k
+                                          
+                v_weight = standardization(self.v_weight, 
+                                           dim_in=self.dim_in, 
+                                           num_head=self.num_head, 
+                                           dim_head=self.dim_head) * self.gamma_v
+                                          
+                proj_weight = standardization(self.proj_weight, 
+                                              dim_in=self.dim_in,
+                                              num_head=self.num_head,
+                                              dim_head=self.dim_head) * self.gamma_f
+            else:
+                q_weight = self.q_weight.T
+                k_weight = self.k_weight.T
+                v_weight = self.v_weight.T
+                proj_weight = self.proj_weight.T
             ####################### ↑↑↑ Standardization ↑↑↑ #######################
             
             ####################### ↓↓↓ Self-attention ↓↓↓ ########################
-            # Shortcut and update std_1
-            shortcut = x
-            #self.std_1_accumulation.data = self.std_1_accumulation + x.std(-1).mean()
+            if self.shortcut_type == "PerLayer":
+                # Shortcut
+                shortcut = x
                 
-            x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
-            # Calculate Query (Q), Key (K) and Value (V)
-            q = torch.nn.functional.linear(x, self.q_weight, self.q_bias) # B, N, C
-            k = torch.nn.functional.linear(x, self.k_weight, self.k_bias) # B, N, C
-            v = torch.nn.functional.linear(x, self.v_weight, self.v_bias) # B, N, C
+                # Feature normalization
+                x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
                 
-            # Add shortcut and droppath to V
-            # v = self.drop_path(v) * nn.functional.sigmoid(self.shortcut_gain1) * 0.5 + shortcut # B, N, C
-            #v = self.drop_path(v) + shortcut # B, N, C
-            
-            # Reshape Query (Q), Key (K) and Value (V)
-            q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-            k = rearrange(k, 'b n (nh hc) -> b nh hc n', nh=self.num_head) # B, nh, C//nh, N
-            v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                # Calculate Query (Q), Key (K) and Value (V)
+                q = torch.nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
+                k = torch.nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
+                v = torch.nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
                 
-            # Shortcut
-            #shortcut = v # B, nh, N, C//nh 
+                # Reshape Query (Q), Key (K) and Value (V)
+                q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                k = rearrange(k, 'b n (nh hc) -> b nh hc n', nh=self.num_head) # B, nh, C//nh, N
+                v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                
+                # Calculate attention map
+                attn = q @ (k * self.scale) # B, nh, N, N
+                attn = attn.softmax(dim=-1) # B, nh, N, N
+                
+                # Calculate attended x
+                x = attn @ v # B, nh, N, C//nh
+                
+                # Reshape x back to input shape
+                x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, nh, N, C//nh
+                
+                # Output linear projection
+                x = torch.nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
+                
+                # Add DropPath and shortcut
+                x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut # B, N, C
             
-            # Calculate attention map
-            attn = q @ (k * self.scale) # B, nh, N, N
-            attn = attn.softmax(dim=-1) # B, nh, N, N
-            
-            # Calculate attended x
-            x = attn @ v # B, nh, N, C//nh
-            
-            # Add shortcut and droppath to attended x
-            #x = self.drop_path(x) * nn.functional.sigmoid(self.shortcut_gain2) * 0.5 + shortcut # B, nh, N, C//nh
-            #x = self.drop_path(x) + shortcut # B, nh, N, C//nh
-            
-            # Reshape x back to input shape
-            x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, nh, N, C//nh
+            elif self.shortcut_type == "PerOperation":
+                droppath_shortcut = x
+                
+                # Shortcut
+                shortcut = x
+                x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
+                
+                # Calculate Query (Q), Key (K) and Value (V)
+                q = torch.nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
+                k = torch.nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
+                v = torch.nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
+                    
+                # Add shortcut to V
+                v = v * self.shortcut_gain1 + shortcut # B, N, C
+                shortcut = v # B, N, C
+                
+                # Reshape Query (Q), Key (K) and Value (V)
+                q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                k = rearrange(k, 'b n (nh hc) -> b nh hc n', nh=self.num_head) # B, nh, C//nh, N
+                v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                    
+                # Calculate attention map
+                attn = q @ (k * self.scale) # B, nh, N, N
+                attn = attn.softmax(dim=-1) # B, nh, N, N
+                
+                # Calculate attended x
+                x = attn @ v # B, nh, N, C//nh
+                
+                # Reshape x back to input shape
+                x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+                
+                # Add shortcut to x
+                x = x * self.shortcut_gain2 + shortcut
+                shortcut = x
+                
+                # Linear projection
+                x = torch.nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
+                
+                # Add shortcut to x
+                x = x * self.shortcut_gain3 + shortcut
+                
+                # Add DropPath
+                x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ####################### ↑↑↑ Self-attention ↑↑↑ ########################
             
-            ###################### ↓↓↓ Linear projection ↓↓↓ ######################
-            # Shortcut
-            #shortcut = x # B, N, C
-            #self.std_2_accumulation.data = self.std_2_accumulation.data + x.std(-1).mean()
-            
-            # Linear projection
-            x = torch.nn.functional.linear(x, self.proj_weight, self.proj_bias) # B, N, C 
-            
-            # Add shortcut and droppath to output
-            #x = self.drop_path(x) * nn.functional.sigmoid(self.shortcut_gain3) * 0.5 + shortcut # B, N, C
-            x = self.drop_path(x) + shortcut # B, N, C
-            ###################### ↑↑↑ Linear projection ↑↑↑ ######################
-            
-            #if x.get_device() == 0:
-                #print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
+            if x.get_device() == 0:
+                print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
                 #print("mhsa gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
                 #print("V:", v_bias)
@@ -339,13 +440,36 @@ class Attention(nn.Module):
 class NFAttentionBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_head, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.Sigmoid, layer=0): 
+                 drop_path=0., act_layer=nn.GELU, shortcut_type='PerLayer', weight_standardization=False,
+                 affected_layers='None'): 
         super().__init__()
-        self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
-                              attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, layer=layer)
+        
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
-                       act_layer=act_layer, drop=drop, drop_path=drop_path, layer=layer)
+        if affected_layers=="Both":
+            self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
+                                  shortcut_type=shortcut_type, weight_standardization=weight_standardization)
+            self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
+                           act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
+                           weight_standardization=weight_standardization)
+        elif affected_layers=="MHSA":
+            self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
+                                  shortcut_type=shortcut_type, weight_standardization=weight_standardization)
+            self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
+                           act_layer=act_layer, drop=drop, drop_path=drop_path)
+        elif affected_layers=="FFN":
+            self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
+            self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
+                           act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
+                           weight_standardization=weight_standardization)
+        elif affected_layers=="None":
+            self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
+            self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
+                           act_layer=act_layer, drop=drop, drop_path=drop_path)
+            
     
     def forward(self, x):
         x = self.attn(x)
@@ -386,8 +510,11 @@ class NFTransformer(VisionTransformer):
             weight_init='',
             embed_layer=PatchEmbed,
             norm_layer=nn.LayerNorm,
-            act_layer=nn.Sigmoid,
+            act_layer=nn.GELU,
             block_fn=NFAttentionBlock,
+            shortcut_type='PerLayer', # ['PerLayer', 'PerOperation']
+            affected_layers='None', # ['None', 'Both', 'MHSA', 'FFN']
+            weight_standardization=False, # [True, False]
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -421,7 +548,9 @@ class NFTransformer(VisionTransformer):
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i],
                 act_layer=act_layer,
-                layer=i
+                shortcut_type=shortcut_type,
+                affected_layers=affected_layers,
+                weight_standardization=weight_standardization
             )
             for i in range(depth)])
         
@@ -454,7 +583,7 @@ class NFTransformer(VisionTransformer):
             if self.training:
                 #x.register_hook(make_print_grad("x of layer "+str(i)))
                 #print(i)
-                x = blk(x)#ckpt.checkpoint(blk, x)
+                x = ckpt.checkpoint(blk, x)
             else:
                 x = blk(x)
             
