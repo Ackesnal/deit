@@ -583,7 +583,7 @@ class NFTransformer(VisionTransformer):
             if self.training:
                 #x.register_hook(make_print_grad("x of layer "+str(i)))
                 #print(i)
-                x = ckpt.checkpoint(blk, x)
+                x = blk(x) #ckpt.checkpoint(blk, x)
             else:
                 x = blk(x)
             
