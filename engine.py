@@ -28,6 +28,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     print_freq = 10
     
     idx = 0
+    len_data_loader = len(data_loader)
+    
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
             
         samples = samples.to(device, non_blocking=True)
@@ -53,11 +55,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
         if args.accumulation_steps > 1:
-            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="agc",
+            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="norm",
                         parameters=model.parameters(), named_parameters=model.named_parameters(), create_graph=is_second_order,
                         update_grad=(idx + 1) % args.accumulation_steps == 0)
         else:
-            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="agc",
+            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="norm",
                         parameters=model.parameters(), create_graph=is_second_order)
         
         if (idx + 1) % args.accumulation_steps == 0:
@@ -73,9 +75,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         
-        #if idx % (2*args.accumulation_steps) == 0:
+        if idx % (4*args.accumulation_steps) == 0:
         # update gamma
-        model.module.adaptive_gamma(1)
+            model.module.adaptive_gamma(4*args.accumulation_steps)
     
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
