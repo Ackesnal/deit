@@ -417,8 +417,8 @@ class Attention(nn.Module):
                 x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ####################### ↑↑↑ Self-attention ↑↑↑ ########################
             
-            if x.get_device() == 0:
-                print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
+            #if x.get_device() == 0:
+                #print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
                 #print("mhsa gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
                 #print("V:", v_bias)
