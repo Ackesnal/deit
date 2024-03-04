@@ -29,14 +29,17 @@ import models_v2
 import models_v3
 
 import utils
-from torchprofile import profile_macs
+from ptflops import get_model_complexity_info
+
+
 
 def get_macs(model, x=None):
-    model.eval()
-    if x is None:
-        x = torch.rand(1, 3, 224, 224).cuda()
-    macs = profile_macs(model, x)
-    return macs
+    macs, params = get_model_complexity_info(model, (3, 224, 224), print_per_layer_stat=False, as_strings=False)
+    if next(model.parameters()).get_device()==0:
+        print('{:<} {:<}{:<}'.format('Computational complexity: ', round(macs*1e-9, 2), 'GMACs'))
+        print('{:<} {:<}{:<}'.format('Number of parameters: ', round(params*1e-6, 2), 'M'))
+        print()
+
 
 
 def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
@@ -233,6 +236,7 @@ def get_args_parser():
     parser.add_argument('--shortcut_type', default='PerLayer', type=str, choices=['PerLayer', 'PerOperation'])
     parser.add_argument('--affected_layers', default='None', type=str, choices=['None', 'Both', 'MHSA', 'FFN'])
     parser.add_argument('--weight_standardization', default=False, action='store_true')
+    parser.add_argument('--batch_norm', default=False, action='store_true')
     return parser
 
 
@@ -318,7 +322,8 @@ def main(args):
         drop_block_rate=None,
         shortcut_type=args.shortcut_type,
         affected_layers=args.affected_layers,
-        weight_standardization=args.weight_standardization
+        weight_standardization=args.weight_standardization,
+        batch_norm=args.batch_norm
     )
     
     if args.finetune:
@@ -380,7 +385,20 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
-
+    
+    if args.test_speed:
+        # test model throughput for three times to ensure accuracy
+        print('Start inference speed testing...')
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        get_macs(model)
+    if args.only_test_speed:
+        return
+        
     model_ema = None
     if args.model_ema:
         # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
@@ -475,35 +493,14 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
-        
-    if args.signal_test:
-        # test model throughput for three times to ensure accuracy
-        print('Start signal speed testing...')
-        signal_test(model)
-        return
-    if args.test_speed:
-        # test model throughput for three times to ensure accuracy
-        print('Start inference speed testing...')
-        inference_speed = speed_test(model)
-        print('inference_speed (inaccurate):', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        inference_speed = speed_test(model)
-        print('inference_speed:', inference_speed, 'images/s')
-        MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
-    if args.only_test_speed:
-        return
     
     if args.eval:
         MACs = get_macs(model)
-        print('GMACs:', MACs * 1e-9)
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
     
     MACs = get_macs(model)
-    print('Model GMACs:', MACs * 1e-9)
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
