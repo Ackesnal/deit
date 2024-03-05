@@ -29,7 +29,7 @@ class CustomizedDropPath(nn.Module):
         keep_prob = 1 - self.drop_prob
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
         random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
-        if keep_prob > 0.0 and self.scale_by_keep:
+        if keep_prob > 0.0 and self.scale_by_keep and origin is None:
             random_tensor.div_(keep_prob)
         
         if origin is None:
@@ -101,9 +101,10 @@ class Mlp(nn.Module):
             drop_path=0.,
             shortcut_type='PerLayer',
             weight_standardization=False,
-            batch_norm=False
+            feature_norm=False
     ):
         super().__init__()
+        
         # Hyperparameters
         self.dim_in = dim_in
         self.dim_hidden = dim_hidden or dim_in
@@ -132,7 +133,12 @@ class Mlp(nn.Module):
             self.fc1_bias = torch.zeros((self.dim_hidden))
             self.fc2_bias = torch.zeros((self.dim_out))
         
-        # Activation, Sigmoid by default
+        # Weight standardization parameters
+        if self.weight_standardization:
+            self.gamma_fc1 = nn.Parameter(torch.ones(1, self.dim_in))
+            self.gamma_fc2 = nn.Parameter(torch.ones(1, self.dim_hidden))
+            
+        # Activation, GELU by default
         self.act = act_layer()
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
@@ -142,23 +148,22 @@ class Mlp(nn.Module):
             self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
             self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
             self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
-        #self.expansion_ratio = nn.Parameter(torch.ones((1)) * 8)
-        
-        #self.gamma_fc1 = nn.Parameter(torch.ones(1, self.dim_in))
-        #self.gamma_fc2 = nn.Parameter(torch.ones(1, self.dim_hidden))
-        
-        #self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        #self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
-        #self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        #self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
+        ########################### ↓↓↓ Normalization ↓↓↓ ##########################
+        self.feature_norm = feature_norm
+        if self.feature_norm == "LayerNorm":
+            self.norm = nn.LayerNorm(dim_in, elementwise_affine=False)
+        elif self.feature_norm == "BatchNorm":
+            self.norm = nn.BatchNorm1d(dim_in, affine=False)
+        elif self.feature_norm == "None":
+            self.feature_std = nn.Parameter(torch.ones((1)), requires_grad=False)        
+        ########################### ↑↑↑ Normalization ↑↑↑ ##########################
+        
+        ######################### ↓↓↓ DropPath & Dropout ↓↓↓ #######################
         # Drop path
         self.drop_path = CustomizedDropPath(drop_path) if drop_path > 0. else None
-
-        self.batch_norm = batch_norm
-        if self.batch_norm:
-            self.norm = nn.BatchNorm1d(dim_in)
+        ######################### ↑↑↑ DropPath & Dropout ↑↑↑ #######################
             
     def forward(self, x):
         if True:
@@ -186,41 +191,45 @@ class Mlp(nn.Module):
                 shortcut = x # B, N, C
                 
                 # Feature normalization
-                if self.batch_norm:
+                if self.feature_norm == "LayerNorm":
+                    x = self.norm(x)
+                elif self.feature_norm == "BatchNorm":
                     x = x.transpose(-1, -2)
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
                 else:
-                    x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
+                    x = x / self.feature_std
                 
                 # FFN in
-                x = torch.nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
+                x = nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
                 
                 # Activation
                 x = self.act(x) # B, N, 4C
                   
                 # FFN out
-                x = torch.nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
+                x = nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
                 
                 # Add DropPath and shortcut
                 x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut
                 
             elif self.shortcut_type == "PerOperation": # Per-operation shortcut
-                # Layer
+                # Layer DropPath
                 droppath_shortcut = x
                 
                 # FFN in
                 shortcut = x.repeat(1,1,4) # B, N, 4C
                 
                 # Feature normalization
-                if self.batch_norm:
+                if self.feature_norm == "LayerNorm":
+                    x = self.norm(x)
+                elif self.feature_norm == "BatchNorm":
                     x = x.transpose(-1, -2)
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
                 else:
-                    x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
+                    x = x / self.feature_std
                     
-                x = torch.nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
+                x = nn.functional.linear(x, fc1_weight, self.fc1_bias) # B, N, 4C
                 x = x * self.shortcut_gain1 + shortcut # B, N, 4C
                 
                 # Activation
@@ -230,7 +239,7 @@ class Mlp(nn.Module):
                     
                 # FFN out
                 shortcut = x.reshape(B, N, -1, C).mean(2) # B, N, C
-                x = torch.nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
+                x = nn.functional.linear(x, fc2_weight, self.fc2_bias) # B, N, C
                 x = x * self.shortcut_gain3 + shortcut # B, N, C
                 
                 # Add DropPath
@@ -257,10 +266,9 @@ class Attention(nn.Module):
                  drop_path=0., 
                  shortcut_type='PerLayer',
                  weight_standardization=False,
-                 batch_norm=False):
+                 feature_norm="LayerNorm"):
         super().__init__()
         
-        #################### ↓↓↓ Self Attention ↓↓↓ ###################
         # Hyperparameters
         self.num_head = num_head
         self.dim_head = dim // num_head
@@ -268,9 +276,7 @@ class Attention(nn.Module):
         self.scale = qk_scale or self.dim_head ** -0.5 # scale
         self.weight_standardization = weight_standardization
         
-        # Attention drop
-        self.attn_drop = nn.Dropout(attn_drop)
-        
+        #################### ↓↓↓ Self Attention ↓↓↓ ####################
         # Take place
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.qkv.weight.requires_grad_(False)
@@ -280,7 +286,6 @@ class Attention(nn.Module):
         self.q_weight = nn.Parameter(torch.rand((dim, dim)))
         self.k_weight = nn.Parameter(torch.rand((dim, dim)))
         self.v_weight = nn.Parameter(torch.rand((dim, dim)))
-        
         if qkv_bias:
             self.q_bias = nn.Parameter(torch.zeros((dim))) 
             self.k_bias = nn.Parameter(torch.zeros((dim)))
@@ -289,9 +294,15 @@ class Attention(nn.Module):
             self.q_bias = torch.zeros((dim))
             self.k_bias = torch.zeros((dim))
             self.v_bias = torch.zeros((dim))
-        #################### ↑↑↑ Self Attention ↑↑↑ ###################
         
-        #################### ↓↓↓ Output Linear ↓↓↓ ####################
+        # Weight standardization parameters
+        if self.weight_standardization:
+            self.gamma_q = nn.Parameter(torch.ones(1, dim))
+            self.gamma_k = nn.Parameter(torch.ones(1, dim))
+            self.gamma_v = nn.Parameter(torch.ones(1, dim))
+        #################### ↑↑↑ Self Attention ↑↑↑ ####################
+        
+        #################### ↓↓↓ Output Linear ↓↓↓ #####################
         # Take place
         self.proj = nn.Linear(dim, dim)
         self.proj.weight.requires_grad_(False)
@@ -301,39 +312,42 @@ class Attention(nn.Module):
         self.proj_weight = nn.Parameter(torch.rand((dim, dim)))
         self.proj_bias = nn.Parameter(torch.rand((dim)))
         
-        # proj_drop
-        self.proj_drop = nn.Dropout(proj_drop)
-        #################### ↑↑↑ Output Linear ↑↑↑ ####################
+        # Weight standardization parameters
+        if self.weight_standardization:
+            self.gamma_f = nn.Parameter(torch.ones(1, dim))
+        #################### ↑↑↑ Output Linear ↑↑↑ #####################
         
-        #################### ↓↓↓ Shortcut scale ↓↓↓ ###################
+        #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
             self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
             self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
-        
-        #self.gamma_q = nn.Parameter(torch.ones(1, dim))
-        #self.gamma_k = nn.Parameter(torch.ones(1, dim))
-        #self.gamma_v = nn.Parameter(torch.ones(1, dim))
-        #self.gamma_f = nn.Parameter(torch.ones(1, dim))
-        
-        #self.std_1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        #self.std_1_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
-        #self.std_2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-        #self.std_2_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
+        ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
         # Drop path
         self.drop_path = CustomizedDropPath(drop_path) if drop_path > 0. else None
+        # Attention drop
+        self.attn_drop = attn_drop
+        # Output projection drop
+        self.proj_drop = nn.Dropout(proj_drop)
+        ################### ↑↑↑ DropPath & Dropout ↑↑↑ #################
         
-        self.batch_norm = batch_norm
-        if self.batch_norm:
-            self.norm = nn.BatchNorm1d(dim)
+        ##################### ↓↓↓ Normalization ↓↓↓ ####################
+        self.feature_norm = feature_norm
+        if self.feature_norm == "LayerNorm":
+            self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+        elif self.feature_norm == "BatchNorm":
+            self.norm = nn.BatchNorm1d(dim, affine=False)
+        elif self.feature_norm == "None":
+            self.feature_std = nn.Parameter(torch.ones((1)), requires_grad=False)
+        ##################### ↑↑↑ Normalization ↑↑↑ ####################
         
     def forward(self, x):
         if True: #self.training:
             B, N, C = x.shape
-            ####################### ↓↓↓ Standardization ↓↓↓ #######################
+            ######################### ↓↓↓ Standardization ↓↓↓ #########################
             if self.weight_standardization:
                 q_weight = standardization(self.q_weight, 
                                            dim_in=self.dim_in, 
@@ -359,81 +373,78 @@ class Attention(nn.Module):
                 k_weight = self.k_weight.T
                 v_weight = self.v_weight.T
                 proj_weight = self.proj_weight.T
-            ####################### ↑↑↑ Standardization ↑↑↑ #######################
+            ######################### ↑↑↑ Standardization ↑↑↑ #########################
             
-            ####################### ↓↓↓ Self-attention ↓↓↓ ########################
+            ######################### ↓↓↓ Self-attention ↓↓↓ ##########################
             if self.shortcut_type == "PerLayer":
                 # Shortcut
                 shortcut = x
                 
                 # Feature normalization
-                if self.batch_norm:
+                if self.feature_norm == "LayerNorm":
+                    x = self.norm(x)
+                elif self.feature_norm == "BatchNorm":
                     x = x.transpose(-1, -2)
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
                 else:
-                    x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
+                    x = x / self.feature_std
                 
                 # Calculate Query (Q), Key (K) and Value (V)
-                q = torch.nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
-                k = torch.nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
-                v = torch.nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
+                q = nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
+                k = nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
+                v = nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
                 
                 # Reshape Query (Q), Key (K) and Value (V)
                 q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-                k = rearrange(k, 'b n (nh hc) -> b nh hc n', nh=self.num_head) # B, nh, C//nh, N
+                k = rearrange(k, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                 v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                 
-                # Calculate attention map
-                attn = q @ (k * self.scale) # B, nh, N, N
-                attn = attn.softmax(dim=-1) # B, nh, N, N
-                
-                # Calculate attended x
-                x = attn @ v # B, nh, N, C//nh
+                # Calculate self-attention
+                x = nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # B, nh, N, C//nh
                 
                 # Reshape x back to input shape
-                x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, nh, N, C//nh
+                x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
                 
                 # Output linear projection
-                x = torch.nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
+                x = nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
                 
                 # Add DropPath and shortcut
                 x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut # B, N, C
             
             elif self.shortcut_type == "PerOperation":
+                # Layer DropPath
                 droppath_shortcut = x
                 
                 # Shortcut
                 shortcut = x
                 
                 # Feature normalization
-                if self.batch_norm:
+                if self.feature_norm == "LayerNorm":
+                    x = self.norm(x)
+                elif self.feature_norm == "BatchNorm":
                     x = x.transpose(-1, -2)
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
-                else:
-                    x = (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True)
+                elif self.feature_norm == "None":
+                    x = x / self.feature_std
                 
                 # Calculate Query (Q), Key (K) and Value (V)
-                q = torch.nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
-                k = torch.nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
-                v = torch.nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
-                    
+                q = nn.functional.linear(x, q_weight, self.q_bias) # B, N, C
+                k = nn.functional.linear(x, k_weight, self.k_bias) # B, N, C
+                v = nn.functional.linear(x, v_weight, self.v_bias) # B, N, C
+                
                 # Add shortcut to V
                 v = v * self.shortcut_gain1 + shortcut # B, N, C
                 shortcut = v # B, N, C
                 
                 # Reshape Query (Q), Key (K) and Value (V)
                 q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-                k = rearrange(k, 'b n (nh hc) -> b nh hc n', nh=self.num_head) # B, nh, C//nh, N
+                k = rearrange(k, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, C//nh, N
                 v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                     
-                # Calculate attention map
-                attn = q @ (k * self.scale) # B, nh, N, N
-                attn = attn.softmax(dim=-1) # B, nh, N, N
-                
-                # Calculate attended x
-                x = attn @ v # B, nh, N, C//nh
+                # Calculate self-attention
+                x = nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # B, nh, N, C//nh
                 
                 # Reshape x back to input shape
                 x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
@@ -443,14 +454,14 @@ class Attention(nn.Module):
                 shortcut = x
                 
                 # Linear projection
-                x = torch.nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
+                x = nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
                 
                 # Add shortcut to x
                 x = x * self.shortcut_gain3 + shortcut
                 
                 # Add DropPath
                 x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
-            ####################### ↑↑↑ Self-attention ↑↑↑ ########################
+            ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
             
             #if x.get_device() == 0:
                 #print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
@@ -476,43 +487,41 @@ class NFAttentionBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_head, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, shortcut_type='PerLayer', weight_standardization=False,
-                 affected_layers='None', batch_norm=False): 
+                 affected_layers='None', feature_norm="LayerNorm"): 
         super().__init__()
         
         mlp_hidden_dim = int(dim * mlp_ratio)
+        
+        assert feature_norm in ["LayerNorm", "BatchNorm", "GroupedLayerNorm"]
+        if feature_norm == "GroupedLayerNorm":
+            feature_norm = "None"
+            
         if affected_layers=="Both":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  batch_norm=batch_norm)
+                                  feature_norm=feature_norm)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
-                           weight_standardization=weight_standardization,
-                           batch_norm=batch_norm)
+                           weight_standardization=weight_standardization, feature_norm=feature_norm)
         elif affected_layers=="MHSA":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  batch_norm=batch_norm)
+                                  feature_norm=feature_norm)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
-                           act_layer=act_layer, drop=drop, drop_path=drop_path,
-                           batch_norm=batch_norm)
+                           act_layer=act_layer, drop=drop, drop_path=drop_path)
         elif affected_layers=="FFN":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
-                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path,
-                                  batch_norm=batch_norm)
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
-                           weight_standardization=weight_standardization,
-                           batch_norm=batch_norm)
+                           weight_standardization=weight_standardization, feature_norm=feature_norm)
         elif affected_layers=="None":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
-                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path,
-                                  batch_norm=batch_norm)
+                                  attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
-                           act_layer=act_layer, drop=drop, drop_path=drop_path,
-                           batch_norm=batch_norm)
-            
+                           act_layer=act_layer, drop=drop, drop_path=drop_path)
     
     def forward(self, x):
         x = self.attn(x)
@@ -557,8 +566,8 @@ class NFTransformer(VisionTransformer):
             block_fn=NFAttentionBlock,
             shortcut_type='PerLayer', # ['PerLayer', 'PerOperation']
             affected_layers='None', # ['None', 'Both', 'MHSA', 'FFN']
+            feature_norm='LayerNorm', # ['GroupedLayerNorm', 'LayerNorm', 'BatchNorm']
             weight_standardization=False, # [True, False]
-            batch_norm=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -595,29 +604,37 @@ class NFTransformer(VisionTransformer):
                 shortcut_type=shortcut_type,
                 affected_layers=affected_layers,
                 weight_standardization=weight_standardization,
-                batch_norm=batch_norm
+                feature_norm=feature_norm
             )
             for i in range(depth)])
         
         self.num_head = num_heads
         self.dim_head = embed_dim//self.num_head
         
-        self.batch_norm = batch_norm
-        if not batch_norm:
-            self.norm_pre = norm_layer(self.dim_head, elementwise_affine=False) if pre_norm else nn.Identity()
-            self.norm = norm_layer(embed_dim, elementwise_affine=False)
+        self.feature_norm = feature_norm
+        self.weight_standardization=weight_standardization
+        
+        if self.feature_norm == "LayerNorm":
+            self.norm_pre = nn.LayerNorm(embed_dim, elementwise_affine=False) if pre_norm else nn.Identity()
+            self.norm = nn.LayerNorm(embed_dim, elementwise_affine=False) if not fc_norm else nn.Identity()
+        elif self.feature_norm == "BatchNorm":
+            self.norm_pre = nn.BatchNorm1d(embed_dim, affine=False) if pre_norm else nn.Identity()
+            self.norm = nn.BatchNorm1d(embed_dim, affine=False) if not fc_norm else nn.Identity()
+        elif self.feature_norm == "GroupedLayerNorm":
+            self.norm_pre = nn.LayerNorm(self.dim_head, elementwise_affine=False) if pre_norm else nn.Identity()
+            self.norm = nn.LayerNorm(embed_dim, elementwise_affine=False) if not fc_norm else nn.Identity()
         else:
-            self.norm_pre = nn.BatchNorm1d(embed_dim)
-            self.norm = nn.BatchNorm1d(embed_dim)
+            assert False, "Feature normalization type not supported"
         
-        self.std_head = nn.Parameter(torch.ones((1)), requires_grad=False)
-        self.std_head_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
-        #self.gamma_head = nn.Parameter(torch.ones(1, embed_dim))
-        self.head_weight = nn.Parameter(torch.rand((embed_dim, num_classes)))
-        self.head_bias = nn.Parameter(torch.zeros((num_classes)))
-        
+        ############################ ↓↓↓ Output Head ↓↓↓ ###########################
+        # Take place
         self.head.weight.requires_grad_(False)
         self.head.bias.requires_grad_(False)
+        
+        # Trainable parameters
+        self.head_weight = nn.Parameter(torch.rand((embed_dim, num_classes)))
+        self.head_bias = nn.Parameter(torch.zeros((num_classes)))
+        ############################ ↑↑↑ Output Head ↑↑↑ ###########################
         
         self._init_standard_weights()
             
@@ -626,11 +643,13 @@ class NFTransformer(VisionTransformer):
         x = self._pos_embed(x)
         B, N, C = x.shape
         
-        if self.batch_norm:
+        if self.feature_norm == "BatchNorm":
             x = x.transpose(-1, -2)
             x = self.norm_pre(x)
             x = x.transpose(-1, -2)
-        else:
+        elif self.feature_norm == "LayerNorm":
+            x = self.norm_pre(x)
+        elif self.feature_norm == "GroupedLayerNorm":
             x = x.reshape(B, N, self.num_head, self.dim_head)
             x = self.norm_pre(x)
             x = x.reshape(B, N, C)
@@ -638,17 +657,18 @@ class NFTransformer(VisionTransformer):
         for i, blk in enumerate(self.blocks):
             if self.training:
                 #x.register_hook(make_print_grad("x of layer "+str(i)))
-                #print(i)
                 x = blk(x) #ckpt.checkpoint(blk, x)
             else:
                 x = blk(x)
                 
-        if self.batch_norm:
+        if self.feature_norm == "BatchNorm":
             x = x.transpose(-1, -2)
             x = self.norm(x)
             x = x.transpose(-1, -2)
-        else:
-            self.norm(x)    
+        elif self.feature_norm == "LayerNorm":
+            x = self.norm(x)
+        elif self.feature_norm == "GroupedLayerNorm":
+            x = self.norm(x)
         return x
     
     def forward_head(self, x, pre_logits: bool = False):
@@ -656,17 +676,7 @@ class NFTransformer(VisionTransformer):
             x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
         x = self.fc_norm(x)
         
-        if pre_logits:
-            return x
-        else:
-            """
-            head_weight = stadardization(self.head_weight, 
-                                         dim_in=self.embed_dim, 
-                                         num_head=1, 
-                                         dim_head=1000) * self.gamma_head
-            """
-            x = torch.nn.functional.linear(x, self.head_weight.T, self.head_bias) # B, N, C
-            return x
+        return x if pre_logits else nn.functional.linear(x, self.head_weight.T, self.head_bias)
 
     def forward(self, x):
         x = self.forward_features(x)
