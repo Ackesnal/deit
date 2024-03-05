@@ -85,6 +85,7 @@ def standardization(W, dim_in, num_head, dim_head):
     return W
 
 
+
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
@@ -101,7 +102,7 @@ class Mlp(nn.Module):
             drop_path=0.,
             shortcut_type='PerLayer',
             weight_standardization=False,
-            feature_norm=False
+            feature_norm="LayerNorm"
     ):
         super().__init__()
         
@@ -145,9 +146,9 @@ class Mlp(nn.Module):
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
-            self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
-            self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*0.1)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*0.1)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*0.1)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         ########################### ↓↓↓ Normalization ↓↓↓ ##########################
@@ -319,9 +320,9 @@ class Attention(nn.Module):
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.zeros((1)))
-            self.shortcut_gain2 = nn.Parameter(torch.zeros((1)))
-            self.shortcut_gain3 = nn.Parameter(torch.zeros((1)))
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*0.1)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*0.1)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*0.1)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
@@ -610,6 +611,7 @@ class NFTransformer(VisionTransformer):
         self.num_head = num_heads
         self.dim_head = embed_dim//self.num_head
         
+        print(feature_norm)
         self.feature_norm = feature_norm
         self.weight_standardization=weight_standardization
         
