@@ -34,7 +34,7 @@ from ptflops import get_model_complexity_info
 
 
 def get_macs(model, x=None):
-    macs, params = get_model_complexity_info(model, (3, 224, 224), print_per_layer_stat=False, as_strings=False)
+    macs, params = get_model_complexity_info(model, (3, 224, 224), print_per_layer_stat=True, as_strings=False)
     if next(model.parameters()).get_device()==0:
         print('{:<} {:<}{:<}'.format('Computational complexity: ', round(macs*1e-9, 2), 'GMACs'))
         print('{:<} {:<}{:<}'.format('Number of parameters: ', round(params*1e-6, 2), 'M'))

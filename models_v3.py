@@ -182,7 +182,6 @@ class Mlp(nn.Module):
             else:
                 fc1_weight = self.fc1_weight.T
                 fc2_weight = self.fc2_weight.T
-            
             ###################### ↑↑↑ Standardization ↑↑↑ ######################
             
             ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
