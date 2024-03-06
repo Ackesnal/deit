@@ -31,7 +31,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     len_data_loader = len(data_loader)
     
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
-            
+    
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -58,9 +58,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="norm",
                         parameters=model.parameters(), named_parameters=model.named_parameters(), create_graph=is_second_order,
                         update_grad=(idx + 1) % args.accumulation_steps == 0)
-        else:
-            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="norm",
-                        parameters=model.parameters(), create_graph=is_second_order)
         
         if (idx + 1) % args.accumulation_steps == 0:
             optimizer.zero_grad()

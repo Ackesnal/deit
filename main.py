@@ -61,6 +61,7 @@ def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     return speed
     
 
+
 def signal_test(model):
     x = torch.rand(1, 3, 224, 224).cuda()
     model.eval()
@@ -71,6 +72,7 @@ def signal_test(model):
     with profiler.profile(record_shapes=True, use_cuda=False, with_modules=True) as prof:
         model(x)
     print(prof.key_averages().table(sort_by="cpu_time_total"))
+
 
 
 def get_args_parser():
@@ -418,6 +420,9 @@ def main(args):
         args.lr = args.lr * args.batch_size * utils.get_world_size() / 1024.0
         args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 1024.0
         args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.step_on_epochs = False
+        args.sched_on_updates = True
+        args.updates_per_epoch = len(data_loader_train)
     # gradient accumulation also need to scale the learning rate
     if args.accumulation_steps > 1:
         args.lr = args.lr * args.accumulation_steps
@@ -428,15 +433,12 @@ def main(args):
         args.updates_per_epoch = len(data_loader_train)//args.accumulation_steps
         
     optimizer = create_optimizer(args, model_without_ddp)
-    if args.accumulation_steps <= 1:
-        loss_scaler = NativeScaler()
-    else:
-        loss_scaler = utils.NativeScalerWithGradNormCount()
+    loss_scaler = utils.NativeScalerWithGradNormCount()
         
     lr_scheduler, num_epochs = create_scheduler_v2(
         optimizer,
         **scheduler_kwargs(args),
-        updates_per_epoch=args.updates_per_epoch if args.accumulation_steps > 1 else None,
+        updates_per_epoch=args.updates_per_epoch,
     )
     
     criterion = LabelSmoothingCrossEntropy()
