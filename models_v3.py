@@ -102,7 +102,8 @@ class Mlp(nn.Module):
             drop_path=0.,
             shortcut_type='PerLayer',
             weight_standardization=False,
-            feature_norm="LayerNorm"
+            feature_norm="LayerNorm",
+            shortcut_gain=0.0
     ):
         super().__init__()
         
@@ -136,8 +137,8 @@ class Mlp(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*0.1)
-            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*0.1)
+            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*0.0)
+            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*0.0)
             
         # Activation, GELU by default
         self.act = act_layer()
@@ -146,12 +147,12 @@ class Mlp(nn.Module):
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_inherit1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-            self.shortcut_inherit2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-            self.shortcut_inherit3 = nn.Parameter(torch.ones((1)), requires_grad=False)
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_inherit1 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
+            self.shortcut_inherit2 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
+            self.shortcut_inherit3 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         ########################### ↓↓↓ Normalization ↓↓↓ ##########################
@@ -254,7 +255,7 @@ class Mlp(nn.Module):
                 x = x * self.shortcut_gain2 + shortcut * self.shortcut_inherit2 # B, N, 4C
                 
                 # Shortcut
-                shortcut = x.reshape(B, N, -1, C).mean(2) # B, N, C
+                shortcut = x[:,:,:C] # B, N, C
                 
                 # Feature normalization
                 if self.feature_norm == "LayerNorm":
@@ -272,6 +273,8 @@ class Mlp(nn.Module):
                 
                 # Add DropPath
                 x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
+                #if x.get_device() == 0:
+                    #print("x after:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         return x
         
@@ -294,7 +297,8 @@ class Attention(nn.Module):
                  drop_path=0., 
                  shortcut_type='PerLayer',
                  weight_standardization=False,
-                 feature_norm="LayerNorm"):
+                 feature_norm="LayerNorm",
+                 shortcut_gain=0.0):
         super().__init__()
         
         # Hyperparameters
@@ -325,9 +329,9 @@ class Attention(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_q = nn.Parameter(torch.ones((1, dim))*0.1)
-            self.gamma_k = nn.Parameter(torch.ones((1, dim))*0.1)
-            self.gamma_v = nn.Parameter(torch.ones((1, dim))*0.1)
+            self.gamma_q = nn.Parameter(torch.ones((1, dim))*0.0)
+            self.gamma_k = nn.Parameter(torch.ones((1, dim))*0.0)
+            self.gamma_v = nn.Parameter(torch.ones((1, dim))*0.0)
         #################### ↑↑↑ Self Attention ↑↑↑ ####################
         
         #################### ↓↓↓ Output Linear ↓↓↓ #####################
@@ -348,12 +352,12 @@ class Attention(nn.Module):
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*0.1)
-            self.shortcut_inherit1 = nn.Parameter(torch.ones((1)), requires_grad=False)
-            self.shortcut_inherit2 = nn.Parameter(torch.ones((1)), requires_grad=False)
-            self.shortcut_inherit3 = nn.Parameter(torch.ones((1)), requires_grad=False)
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain)
+            self.shortcut_inherit1 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
+            self.shortcut_inherit2 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
+            self.shortcut_inherit3 = nn.Parameter(torch.ones((1))*1.0, requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
@@ -416,7 +420,6 @@ class Attention(nn.Module):
                 k_weight = self.k_weight.T
                 v_weight = self.v_weight.T
                 proj_weight = self.proj_weight.T
-                
             ######################### ↑↑↑ Standardization ↑↑↑ #########################
             
             ######################### ↓↓↓ Self-attention ↓↓↓ ##########################
@@ -446,6 +449,7 @@ class Attention(nn.Module):
                 
                 # Calculate self-attention
                 x = nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop) # B, nh, N, C//nh
+                
                 # Reshape x back to input shape
                 x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
                 
@@ -479,6 +483,8 @@ class Attention(nn.Module):
                 
                 # Add shortcut to V
                 v = v * self.shortcut_gain1 + shortcut * self.shortcut_inherit1 # B, N, C
+                
+                # Shortcut
                 shortcut = v # B, N, C
                 
                 # Reshape Query (Q), Key (K) and Value (V)
@@ -505,11 +511,11 @@ class Attention(nn.Module):
                     x = x.transpose(-1, -2)
                     x = self.norm_2(x)
                     x = x.transpose(-1, -2)
-                elif self.feature_norm == "None":
+                else:
                     x = x / self.feature_std_2
                     
                 # Linear projection
-                x = nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C 
+                x = nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C
                 
                 # Add shortcut to x
                 x = x * self.shortcut_gain3 + shortcut * self.shortcut_inherit3
@@ -517,9 +523,9 @@ class Attention(nn.Module):
                 # Add DropPath
                 x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
-            
+            #print(self.shortcut_gain1, self.shortcut_gain2, self.shortcut_gain3)
             #if x.get_device() == 0:
-                #print("x:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
+                #print("x after:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
                 #print("mhsa gammas:", self.gamma_input1.data, self.gamma_input2.data, self.gamma_input3.data)
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
                 #print("V:", v_bias)
@@ -542,7 +548,7 @@ class NFAttentionBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_head, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, shortcut_type='PerLayer', weight_standardization=False,
-                 affected_layers='None', feature_norm="LayerNorm"): 
+                 affected_layers='None', feature_norm="LayerNorm", shortcut_gain=0.0): 
         super().__init__()
         
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -555,15 +561,16 @@ class NFAttentionBlock(nn.Module):
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  feature_norm=feature_norm)
+                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
-                           weight_standardization=weight_standardization, feature_norm=feature_norm)
+                           weight_standardization=weight_standardization, feature_norm=feature_norm, 
+                           shortcut_gain=shortcut_gain)
         elif affected_layers=="MHSA":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  feature_norm=feature_norm)
+                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path)
         elif affected_layers=="FFN":
@@ -571,7 +578,8 @@ class NFAttentionBlock(nn.Module):
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
-                           weight_standardization=weight_standardization, feature_norm=feature_norm)
+                           weight_standardization=weight_standardization, feature_norm=feature_norm,
+                           shortcut_gain=shortcut_gain)
         elif affected_layers=="None":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
@@ -623,6 +631,7 @@ class NFTransformer(VisionTransformer):
             affected_layers='None', # ['None', 'Both', 'MHSA', 'FFN']
             feature_norm='LayerNorm', # ['GroupedLayerNorm', 'LayerNorm', 'BatchNorm']
             weight_standardization=False, # [True, False]
+            shortcut_gain=0.0,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -659,7 +668,8 @@ class NFTransformer(VisionTransformer):
                 shortcut_type=shortcut_type,
                 affected_layers=affected_layers,
                 weight_standardization=weight_standardization,
-                feature_norm=feature_norm
+                feature_norm=feature_norm,
+                shortcut_gain=shortcut_gain
             )
             for i in range(depth)])
         
