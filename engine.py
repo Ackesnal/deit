@@ -54,9 +54,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        if args.accumulation_steps > 1:
+        if args.accumulation_steps >= 1:
             loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="norm",
-                        parameters=model.parameters(), named_parameters=model.named_parameters(), create_graph=is_second_order,
+                        parameters=model.parameters(), create_graph=is_second_order, named_parameters=model.named_parameters(),
                         update_grad=(idx + 1) % args.accumulation_steps == 0)
         
         if (idx + 1) % args.accumulation_steps == 0:
@@ -72,9 +72,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         
-        if idx % (4*args.accumulation_steps) == 0:
+        #if idx % (4*args.accumulation_steps) == 0:
         # update gamma
-            model.module.adaptive_gamma(4*args.accumulation_steps)
+            #model.module.adaptive_gamma(4*args.accumulation_steps)
     
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

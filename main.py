@@ -240,6 +240,7 @@ def get_args_parser():
     parser.add_argument('--feature_norm', default='LayerNorm', type=str, choices=['GroupedLayerNorm', 'LayerNorm', 'BatchNorm'])
     parser.add_argument('--weight_standardization', default=False, action='store_true')
     parser.add_argument('--shortcut_gain', type=float, default=0.0)
+    parser.add_argument('--gamma', type=float, default=0.1)
     return parser
 
 
@@ -327,7 +328,8 @@ def main(args):
         affected_layers=args.affected_layers,
         weight_standardization=args.weight_standardization,
         feature_norm=args.feature_norm,
-        shortcut_gain=args.shortcut_gain
+        shortcut_gain=args.shortcut_gain,
+        gamma=args.gamma
     )
     
     if args.finetune:

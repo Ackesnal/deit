@@ -297,7 +297,7 @@ class NativeScalerWithGradNormCount:
             """
             for name, p in named_parameters:
                 if p.grad is not None:
-                    print(name, "  ", p.grad.mean().item(), "    ", p.grad.max().item(), "    ", p.grad.min().item())
+                    print(name, "  ", p.grad.mean().item(), "    ", p.grad.max().item(), "    ", p.grad.min().item(), "    ", p.norm().item(), "    ", p.grad.norm().item())
             print("\n\n\n\n")
             """
             

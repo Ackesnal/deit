@@ -103,7 +103,8 @@ class Mlp(nn.Module):
             shortcut_type='PerLayer',
             weight_standardization=False,
             feature_norm="LayerNorm",
-            shortcut_gain=0.0
+            shortcut_gain=0.0,
+            gamma=0.1
     ):
         super().__init__()
         
@@ -137,8 +138,8 @@ class Mlp(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*0.0)
-            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*0.0)
+            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*gamma)
+            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*gamma)
             
         # Activation, GELU by default
         self.act = act_layer()
@@ -298,7 +299,8 @@ class Attention(nn.Module):
                  shortcut_type='PerLayer',
                  weight_standardization=False,
                  feature_norm="LayerNorm",
-                 shortcut_gain=0.0):
+                 shortcut_gain=0.0,
+                 gamma=0.1):
         super().__init__()
         
         # Hyperparameters
@@ -329,9 +331,9 @@ class Attention(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_q = nn.Parameter(torch.ones((1, dim))*0.0)
-            self.gamma_k = nn.Parameter(torch.ones((1, dim))*0.0)
-            self.gamma_v = nn.Parameter(torch.ones((1, dim))*0.0)
+            self.gamma_q = nn.Parameter(torch.ones((1, dim))*gamma)
+            self.gamma_k = nn.Parameter(torch.ones((1, dim))*gamma)
+            self.gamma_v = nn.Parameter(torch.ones((1, dim))*gamma)
         #################### ↑↑↑ Self Attention ↑↑↑ ####################
         
         #################### ↓↓↓ Output Linear ↓↓↓ #####################
@@ -548,7 +550,7 @@ class NFAttentionBlock(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     def __init__(self, dim, num_head, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, shortcut_type='PerLayer', weight_standardization=False,
-                 affected_layers='None', feature_norm="LayerNorm", shortcut_gain=0.0): 
+                 affected_layers='None', feature_norm="LayerNorm", shortcut_gain=0.0, gamma=0.1): 
         super().__init__()
         
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -561,16 +563,16 @@ class NFAttentionBlock(nn.Module):
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain)
+                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain, gamma=gamma)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
                            weight_standardization=weight_standardization, feature_norm=feature_norm, 
-                           shortcut_gain=shortcut_gain)
+                           shortcut_gain=shortcut_gain, gamma=gamma)
         elif affected_layers=="MHSA":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
                                   shortcut_type=shortcut_type, weight_standardization=weight_standardization,
-                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain)
+                                  feature_norm=feature_norm, shortcut_gain=shortcut_gain, gamma=gamma)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path)
         elif affected_layers=="FFN":
@@ -579,7 +581,7 @@ class NFAttentionBlock(nn.Module):
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
                            weight_standardization=weight_standardization, feature_norm=feature_norm,
-                           shortcut_gain=shortcut_gain)
+                           shortcut_gain=shortcut_gain, gamma=gamma)
         elif affected_layers=="None":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path)
@@ -632,6 +634,7 @@ class NFTransformer(VisionTransformer):
             feature_norm='LayerNorm', # ['GroupedLayerNorm', 'LayerNorm', 'BatchNorm']
             weight_standardization=False, # [True, False]
             shortcut_gain=0.0,
+            gamma=0.1,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -669,7 +672,8 @@ class NFTransformer(VisionTransformer):
                 affected_layers=affected_layers,
                 weight_standardization=weight_standardization,
                 feature_norm=feature_norm,
-                shortcut_gain=shortcut_gain
+                shortcut_gain=shortcut_gain,
+                gamma=gamma
             )
             for i in range(depth)])
         
