@@ -241,6 +241,7 @@ def get_args_parser():
     parser.add_argument('--weight_standardization', default=False, action='store_true')
     parser.add_argument('--shortcut_gain', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.1)
+    parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU'])
     return parser
 
 
@@ -315,7 +316,16 @@ def main(args):
             mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
-
+    
+    if args.activation=="ReLU":
+        act_layer=torch.nn.ReLU
+    elif args.activation=="GELU":
+        act_layer=torch.nn.GELU
+    elif args.activation=="LeakyReLU":
+        act_layer=torch.nn.LeakyReLU
+    elif args.activation=="Sigmoid":
+        act_layer=torch.nn.Sigmoid
+    
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
@@ -329,7 +339,8 @@ def main(args):
         weight_standardization=args.weight_standardization,
         feature_norm=args.feature_norm,
         shortcut_gain=args.shortcut_gain,
-        gamma=args.gamma
+        gamma=args.gamma,
+        act_layer=act_layer
     )
     
     if args.finetune:

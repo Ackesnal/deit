@@ -614,7 +614,7 @@ class NFTransformer(VisionTransformer):
             weight_init='',
             embed_layer=PatchEmbed,
             norm_layer=nn.LayerNorm,
-            act_layer=nn.LeakyReLU,
+            act_layer=nn.GELU,
             block_fn=NFAttentionBlock,
             shortcut_type='PerLayer', # ['PerLayer', 'PerOperation']
             affected_layers='None', # ['None', 'Both', 'MHSA', 'FFN']
