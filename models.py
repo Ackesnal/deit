@@ -60,7 +60,7 @@ class ShuffleVisionTransformer(VisionTransformer):
 
 
 @register_model
-def deit_tiny_patch16_224(pretrained=False, pretrained_cfg=None, **kwargs):
+def deit_tiny_patch16_224(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)

@@ -242,6 +242,7 @@ def get_args_parser():
     parser.add_argument('--shortcut_gain', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU'])
+    parser.add_argument('--reparam', default=False, action='store_true')
     return parser
 
 
@@ -400,7 +401,14 @@ def main(args):
                 p.requires_grad = False
         except:
             print('no patch embed')
-            
+    
+    
+    if args.reparam:
+        print("Reparametering the backbone ...")
+        model.reparam()
+        print("...")
+        print("Reparameterization done!")
+        
     model.to(device)
     
     if args.test_speed:
@@ -522,8 +530,10 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     
-    model.module.adaptive_gamma(1)
+    if not args.resume:
+        model.module.adaptive_std(1)
     for epoch in range(args.start_epoch, args.epochs):
+        model.module.clean_std()
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         
@@ -580,7 +590,10 @@ def main(args):
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
-
+        
+        if epoch % 30 == 0 and epoch > 0:
+            model.module.adaptive_std(len(data_loader_train))
+        
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))

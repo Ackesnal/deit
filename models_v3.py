@@ -139,19 +139,16 @@ class Mlp(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*gamma)
-            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*gamma)
+            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*gamma, requires_grad=False)
+            self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*gamma, requires_grad=False)
             
         # Activation, GELU by default
         self.act = act_layer()
-        self.act_ratio = nn.Parameter(torch.ones((1))*1.0)
+        #self.act_ratio = nn.Parameter(torch.ones((1)))
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
         self.shortcut_type = shortcut_type
-        #if self.shortcut_type == "PerLayer":
-        #    self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
-        #    self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
             self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
@@ -165,7 +162,8 @@ class Mlp(nn.Module):
         elif self.feature_norm == "BatchNorm":
             self.norm = nn.BatchNorm1d(dim_in, affine=False)
         elif self.feature_norm == "None":
-            self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=True)
+            self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
+            self.feature_std_accumulation = nn.Parameter(torch.ones((1))*std, requires_grad=False)
         ########################### ↑↑↑ Normalization ↑↑↑ ##########################
         
         ######################### ↓↓↓ DropPath & Dropout ↓↓↓ #######################
@@ -210,6 +208,7 @@ class Mlp(nn.Module):
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
                 else:
+                    self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
                     x = x / self.feature_std
                 
                 # FFN in
@@ -222,16 +221,17 @@ class Mlp(nn.Module):
                 x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut
                 
                 # Activation
-                x = self.act(x) * self.act_ratio
+                x = self.act(x)
                 
                 # If feature norm is `None`, i.e., weight standardization, 
                 # then re-centerize the feature per head
-                if self.feature_norm == "None":
-                    x = x.reshape(B, N, self.num_head, C//self.num_head)
-                    x = x - x.mean(-1, keepdim=True) # B, N, C
-                    x = x.reshape(B, N, C)
-                else:
-                    x = x - x.mean(-1, keepdim=True) # B, N, C
+                if self.weight_standardization:
+                    if self.feature_norm == "None":
+                        x = x.reshape(B, N, self.num_head, C//self.num_head)
+                        x = x - x.mean(-1, keepdim=True) # B, N, C
+                        x = x.reshape(B, N, C)
+                    else:
+                        x = x - x.mean(-1, keepdim=True) # B, N, C
                 
             elif self.shortcut_type == "PerOperation": # Per-operation shortcut
                 # Layer DropPath
@@ -270,18 +270,45 @@ class Mlp(nn.Module):
                 x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
             #if x.get_device() == 0:
-                #print("fc1_weight:", fc1_weight.norm().item())
                 #print("x std:", self.feature_std.item())
                 #print("x after ffn:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
+                #print("fc1_weight:", fc1_weight.norm().item())
+                #print("weight 1:", fc1_weight.norm())
+                #print("weight 2:", fc2_weight.norm())
                 #print("act_ratio:", self.act_ratio.item())
                 #print("Shortcut gain:", self.shortcut_gain1.item(), self.shortcut_gain2.item())
         return x
         
-    def adaptive_gamma(self, steps):
-        self.std_1.data = (self.std_1_accumulation/steps) * self.std_1
-        self.std_2.data = (self.std_2_accumulation/steps) * self.std_2
-        self.std_1_accumulation.data = self.std_1_accumulation.data * 0
-        self.std_2_accumulation.data = self.std_2_accumulation.data * 0
+    def adaptive_std(self, steps):
+        self.feature_std.data = self.feature_std.data * 0.8 + (self.feature_std_accumulation/steps).data * 0.1
+        print(self.feature_std.data)
+        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        
+    def clean_std(self):
+        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        
+    def reparam(self):
+        if self.weight_standardization:
+            fc1_weight = standardization(self.fc1_weight, 
+                                         dim_in = self.dim_in, 
+                                         num_head = self.num_head, 
+                                         dim_head = self.dim_hidden//self.num_head) * self.gamma_fc1
+                                            
+            fc2_weight = standardization(self.fc2_weight, 
+                                         dim_in = self.dim_hidden, 
+                                         num_head = self.num_head,
+                                         dim_head = self.dim_out//self.num_head) * self.gamma_fc2
+                
+            fc1_bias = self.fc1_bias - self.fc1_bias.mean()
+            fc2_bias = self.fc2_bias - self.fc2_bias.mean()
+                                          
+            ffn_weight = fc2_weight @ fc1_weight + torch.eye(self.dim_in)
+            ffn_bias = nn.functional.linear(fc1_bias.unsqueeze(0), fc2_weight, fc2_bias).squeeze()
+        else:
+            assert False; "This model is not RepViT or lacks proper weight gammas"
+        
+        return ffn_weight, ffn_bias
+        
         
         
 class Attention(nn.Module):
@@ -321,9 +348,9 @@ class Attention(nn.Module):
         self.k_weight = nn.Parameter(torch.zeros((dim, dim)))
         self.v_weight = nn.Parameter(torch.zeros((dim, dim)))
         if qkv_bias:
-            self.q_bias = nn.Parameter(torch.zeros((dim)), requires_grad=False) 
+            self.q_bias = nn.Parameter(torch.zeros((dim))) 
             self.k_bias = nn.Parameter(torch.zeros((dim)))
-            self.v_bias = nn.Parameter(torch.zeros((dim)))
+            self.v_bias = nn.Parameter(torch.zeros((dim)), requires_grad=False)
         else:
             self.q_bias = nn.Parameter(torch.zeros((dim)), requires_grad=False) 
             self.k_bias = nn.Parameter(torch.zeros((dim)), requires_grad=False) 
@@ -331,9 +358,9 @@ class Attention(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_q = nn.Parameter(torch.ones((1, dim))*gamma)
-            self.gamma_k = nn.Parameter(torch.ones((1, dim))*gamma)
-            self.gamma_v = nn.Parameter(torch.ones((1, dim))*gamma)
+            self.gamma_q = nn.Parameter(torch.ones((1, dim))*gamma, requires_grad=False)
+            self.gamma_k = nn.Parameter(torch.ones((1, dim))*gamma, requires_grad=False)
+            self.gamma_v = nn.Parameter(torch.ones((1, dim))*gamma, requires_grad=False)
         #################### ↑↑↑ Self Attention ↑↑↑ ####################
         
         #################### ↓↓↓ Output Linear ↓↓↓ #####################
@@ -348,13 +375,11 @@ class Attention(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_proj = nn.Parameter(torch.ones(1, dim)*gamma)
+            self.gamma_proj = nn.Parameter(torch.ones(1, dim)*gamma, requires_grad=False)
         #################### ↑↑↑ Output Linear ↑↑↑ #####################
         
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
-        #if self.shortcut_type == "PerLayer":
-        #    self.shortcut_gain = nn.Parameter(torch.ones((1))*shortcut_gain)
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
             self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
@@ -377,7 +402,8 @@ class Attention(nn.Module):
         elif self.feature_norm == "BatchNorm":
             self.norm = nn.BatchNorm1d(dim, affine=False)
         elif self.feature_norm == "None":
-            self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=True)
+            self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
+            self.feature_std_accumulation = nn.Parameter(torch.ones((1))*0, requires_grad=False)
         ##################### ↑↑↑ Normalization ↑↑↑ ####################
         
     def forward(self, x):
@@ -433,6 +459,7 @@ class Attention(nn.Module):
                     x = self.norm(x)
                     x = x.transpose(-1, -2)
                 else:
+                    self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
                     x = x / self.feature_std
                 
                 # Calculate Query (Q), Key (K) and Value (V)
@@ -525,12 +552,95 @@ class Attention(nn.Module):
                 #print("F weight:", self.proj_weight.grad.mean(), self.proj_weight.grad.max(), self.proj_weight.grad.min())
             return x
     
-    def adaptive_gamma(self, steps):
-        self.std_1.data = (self.std_1_accumulation/steps) * self.std_1
-        self.std_2.data = (self.std_2_accumulation/steps) * self.std_2
-        self.std_1_accumulation.data = self.std_1_accumulation.data * 0
-        self.std_2_accumulation.data = self.std_2_accumulation.data * 0
+    def adaptive_std(self, steps):
+        self.feature_std.data = self.feature_std.data * 0.8 + (self.feature_std_accumulation/steps).data * 0.1
+        print(self.feature_std.data)
+        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
+    def clean_std(self):
+        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        
+    def reparam(self):
+        if self.weight_standardization:
+            q_weight = standardization(self.q_weight, 
+                                       dim_in=self.dim_in, 
+                                       num_head=self.num_head, 
+                                       dim_head=self.dim_head) * self.gamma_q
+                                          
+            k_weight = standardization(self.k_weight, 
+                                       dim_in=self.dim_in, 
+                                       num_head=self.num_head, 
+                                       dim_head=self.dim_head) * self.gamma_k
+                                          
+            v_weight = standardization(self.v_weight, 
+                                       dim_in=self.dim_in, 
+                                       num_head=self.num_head, 
+                                       dim_head=self.dim_head) * self.gamma_v
+                                          
+            proj_weight = standardization(self.proj_weight, 
+                                          dim_in=self.dim_in,
+                                          num_head=self.num_head,
+                                          dim_head=self.dim_head) * self.gamma_proj
+                                          
+            v_weight = (proj_weight + torch.eye(self.dim_in)) @ (v_weight + torch.eye(self.dim_in))
+            q_bias = self.q_bias - self.q_bias.mean()
+            k_bias = self.k_bias - self.k_bias.mean()
+            v_bias = self.proj_bias - self.proj_bias.mean()
+        else:
+            assert False; "This model is not RepViT or lacks proper weight gammas"
+        
+        return q_weight, k_weight, v_weight, q_bias, k_bias, v_bias
+
+
+
+class RepAttention(nn.Module):
+    def __init__(self, 
+                 dim, 
+                 num_head,
+                 q_weight,
+                 k_weight,
+                 v_weight,
+                 q_bias,
+                 k_bias,
+                 v_bias
+                 ):
+        super().__init__()
+        
+        # Hyperparameters
+        self.num_head = num_head
+        self.dim_head = dim // num_head
+        self.dim = dim
+        self.scale = self.dim_head ** -0.5 # scale
+        
+        self.q_weight = nn.Parameter(q_weight)
+        self.k_weight = nn.Parameter(k_weight)
+        self.v_weight = nn.Parameter(v_weight)
+        self.q_bias = nn.Parameter(q_bias)
+        self.k_bias = nn.Parameter(k_bias)
+        self.v_bias = nn.Parameter(v_bias)
+        
+    def forward(self, x):
+        B, N, C = x.shape
+            
+        # Calculate Query (Q), Key (K) and Value (V)
+        q = nn.functional.linear(x, self.q_weight, self.q_bias) # B, N, C
+        k = nn.functional.linear(x, self.k_weight, self.k_bias) # B, N, C
+        v = nn.functional.linear(x, self.v_weight, self.v_bias) # B, N, C
+                
+        # Reshape Query (Q), Key (K) and Value (V)
+        q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+        k = rearrange(k, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+        v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
+                
+        # Calculate self-attention
+        x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
+        
+        x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+        
+        x = nn.functional.gelu(x)
+        
+        return x
+                    
         
 
 class NFAttentionBlock(nn.Module):
@@ -541,7 +651,10 @@ class NFAttentionBlock(nn.Module):
         super().__init__()
         
         mlp_hidden_dim = int(dim * mlp_ratio)
-        
+        self.rep = False
+        self.dim = dim
+        self.num_head = num_head
+                
         assert feature_norm in ["LayerNorm", "BatchNorm", "GroupedLayerNorm"]
         if feature_norm == "GroupedLayerNorm":
             feature_norm = "None"
@@ -554,7 +667,7 @@ class NFAttentionBlock(nn.Module):
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
                            act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
                            weight_standardization=weight_standardization, feature_norm=feature_norm, 
-                           shortcut_gain=shortcut_gain, gamma=gamma, std=std+0.1)
+                           shortcut_gain=shortcut_gain, gamma=gamma, std=std+0.15)
         elif affected_layers=="MHSA":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, 
@@ -566,9 +679,9 @@ class NFAttentionBlock(nn.Module):
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, shortcut_gain=shortcut_gain,)
             self.mlp = Mlp(dim_in=dim, dim_hidden=mlp_hidden_dim, num_head=num_head, bias=qkv_bias,
-                           act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_type=shortcut_type,
+                           act_layer=act_layer, drop=drop, drop_path=drop_path, shortcut_tyspe=shortcut_type,
                            weight_standardization=weight_standardization, feature_norm=feature_norm,
-                           shortcut_gain=shortcut_gain, gamma=gamma, std=std+0.1)
+                           shortcut_gain=shortcut_gain, gamma=gamma, std=std+0.15)
         elif affected_layers=="None":
             self.attn = Attention(dim, num_head=num_head, qkv_bias=qkv_bias, qk_scale=qk_scale, 
                                   attn_drop=attn_drop, proj_drop=drop, drop_path=drop_path, shortcut_gain=shortcut_gain,)
@@ -576,13 +689,30 @@ class NFAttentionBlock(nn.Module):
                            act_layer=act_layer, drop=drop, drop_path=drop_path)
     
     def forward(self, x):
-        x = self.attn(x)
-        x = self.mlp(x)
+        if not self.rep:
+            x = self.attn(x)
+            x = self.mlp(x)
+        else:
+            x = self.attn(x)
         return x
         
-    def adaptive_gamma(self, steps):
-        self.attn.adaptive_gamma(steps)
-        self.mlp.adaptive_gamma(steps)
+    def adaptive_std(self, steps):
+        self.attn.adaptive_std(steps)
+        self.mlp.adaptive_std(steps)
+        
+    def clean_std(self):
+        self.attn.clean_std()
+        self.mlp.clean_std()
+    
+    def reparam(self):
+        q_weight, k_weight, v_weight, q_bias, k_bias, v_bias = self.attn.reparam()
+        ffn_weight, ffn_bias = self.mlp.reparam()
+        v_weight = ffn_weight @ v_weight
+        v_bias = nn.functional.linear(v_bias.unsqueeze(0), ffn_weight, ffn_bias).squeeze()
+        self.rep = True
+        del self.attn
+        del self.mlp
+        self.attn = RepAttention(self.dim, self.num_head, q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
 
 
 
@@ -748,18 +878,22 @@ class NFTransformer(VisionTransformer):
             elif "_bias" in name:
                 nn.init.zeros_(param)
                 
-    def adaptive_gamma(self, steps):
-        return
+    def adaptive_std(self, steps):
         for blk in self.blocks:
-            prev = blk.adaptive_gamma(steps)
+            blk.adaptive_std(steps)
             
-        self.std_head.data = (self.std_head_accumulation/steps) * self.std_head
-        self.std_head_accumulation.data = self.std_head_accumulation.data * 0
+    def clean_std(self):
+        for blk in self.blocks:
+            blk.clean_std()
+            
+    def reparam(self):
+        for blk in self.blocks:
+            blk.reparam()
             
             
         
 @register_model
-def normalization_free_deit_small_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
+def normalization_free_deit_tiny_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
     model = NFTransformer(patch_size=16, embed_dim=192, depth=12, pre_norm=True,
                           num_heads=3, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
