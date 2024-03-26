@@ -907,3 +907,10 @@ def normalization_free_deit_small_patch16_224_layer12(pretrained=False, pretrain
                           num_heads=6, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
+    
+@register_model
+def normalization_free_deit_medium_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
+    model = NFTransformer(patch_size=16, embed_dim=768, depth=12, pre_norm=True,
+                          num_heads=12, mlp_ratio=4, qkv_bias=True, fc_norm=False,
+                          norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
