@@ -68,7 +68,7 @@ def standardization(W, dim_in, num_head, dim_head):
         
     mean = W.mean(dim=-1, keepdim=True)
     std = W.std(dim=-1, keepdim=True)
-    scale = torch.maximum(std, torch.ones(std.shape, device=std.device)*1e-4) #*(dim_head**0.5)
+    scale = torch.maximum(std*(dim_head**0.5), torch.ones(std.shape, device=std.device)*1e-4) #
     W = (W - mean) / scale
     
     #W.register_hook(make_print_grad("W after standardization"))
