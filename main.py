@@ -241,6 +241,9 @@ def get_args_parser():
     parser.add_argument('--weight_standardization', default=False, action='store_true')
     parser.add_argument('--shortcut_gain', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.1)
+    parser.add_argument('--finetune_gain', type=int, default=0)
+    parser.add_argument('--finetune_gamma', type=int, default=0)
+    parser.add_argument('--finetune_std', type=int, default=30)
     parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU'])
     parser.add_argument('--reparam', default=False, action='store_true')
     return parser
@@ -530,44 +533,82 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     
-    if not args.resume:
-        model.module.adaptive_std(1)
-    else:
-        if args.start_epoch >= 50:
+    if args.weight_standardization:
+        if not args.resume:
+            model.module.adaptive_std(1)
+        else:
+            if args.start_epoch >= args.finetune_gamma:
+                for name, param in model.module.named_parameters():
+                    if "gamma" in name:
+                        param.requires_grad_(True)
+                model_without_ddp = model.module
+                        
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                    
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                    optimizer,
+                    **scheduler_kwargs(args),
+                    updates_per_epoch=args.updates_per_epoch,
+                )
+                
+                lr_scheduler.step(args.start_epoch)
+    if args.shortcut_type == "PerOperation":
+        if args.start_epoch >= args.finetune_gain:
             for name, param in model.module.named_parameters():
-                if "gamma" in name:
+                if "shortcut_gain" in name:
                     param.requires_grad_(True)
             model_without_ddp = model.module
-                    
+                        
             optimizer = create_optimizer(args, model_without_ddp)
             loss_scaler = utils.NativeScalerWithGradNormCount()
-                
+                    
             lr_scheduler, num_epochs = create_scheduler_v2(
                 optimizer,
                 **scheduler_kwargs(args),
                 updates_per_epoch=args.updates_per_epoch,
             )
-            
+                
             lr_scheduler.step(args.start_epoch)
                     
     for epoch in range(args.start_epoch, args.epochs):
-        model.module.clean_std()
-        
-        if epoch == 50:
-            for name, param in model.module.named_parameters():
-                if "gamma" in name:
-                    param.requires_grad_(True)
-            model_without_ddp = model.module
-            
-            optimizer = create_optimizer(args, model_without_ddp)
-            loss_scaler = utils.NativeScalerWithGradNormCount()
+        if args.weight_standardization:
+            if epoch == args.finetune_gamma:
+                for name, param in model.module.named_parameters():
+                    if "gamma" in name:
+                        param.requires_grad_(True)
+                model_without_ddp = model.module
+                        
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                    
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                    optimizer,
+                    **scheduler_kwargs(args),
+                    updates_per_epoch=args.updates_per_epoch,
+                )
+                lr_scheduler.step(epoch)
                 
-            lr_scheduler, num_epochs = create_scheduler_v2(
-                optimizer,
-                **scheduler_kwargs(args),
-                updates_per_epoch=args.updates_per_epoch,
-            )
-            lr_scheduler.step(epoch)
+            if (epoch + 1) % args.finetune_std:
+                model.module.clean_std()
+        
+        if args.shortcut_type == "PerOperation":
+            if epoch == args.finetune_gain:
+                for name, param in model.module.named_parameters():
+                    if "shortcut_gain" in name:
+                        param.requires_grad_(True)
+                model_without_ddp = model.module
+                            
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                        
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                    optimizer,
+                    **scheduler_kwargs(args),
+                    updates_per_epoch=args.updates_per_epoch,
+                )
+                    
+                lr_scheduler.step(args.start_epoch)
             
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -626,7 +667,7 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
         
-        if epoch % 50 == 0 and epoch > 0:
+        if args.weight_standardization and (epoch + 1) % args.finetune_std:
             model.module.adaptive_std(len(data_loader_train))
         
     total_time = time.time() - start_time
