@@ -352,6 +352,7 @@ class Attention(nn.Module):
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
             self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
@@ -473,6 +474,8 @@ class Attention(nn.Module):
                 
             # Add shortcut to V
             v = v * self.shortcut_gain1 + shortcut # B, N, C
+            
+            shortcut = v
                 
             # Reshape Query (Q), Key (K) and Value (V)
             q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
@@ -485,6 +488,8 @@ class Attention(nn.Module):
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
             
+            x = x * self.shortcut_gain2 + shortcut # B, N, C
+            
             # Shortcut
             shortcut = x
                     
@@ -492,7 +497,7 @@ class Attention(nn.Module):
             x = nn.functional.linear(x, proj_weight, self.proj_bias) # B, N, C
             
             # Add shortcut to x
-            x = x * self.shortcut_gain2 + shortcut
+            x = x * self.shortcut_gain3 + shortcut # B, N, C
                 
             # Add DropPath
             x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x

@@ -589,7 +589,7 @@ def main(args):
                 )
                 lr_scheduler.step(epoch)
                 
-            if (epoch + 1) % args.finetune_std:
+            if (epoch + 1) % args.finetune_std == 0:
                 model.module.clean_std()
         
         if args.shortcut_type == "PerOperation":
@@ -667,7 +667,7 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
         
-        if args.weight_standardization and (epoch + 1) % args.finetune_std:
+        if args.weight_standardization and (epoch + 1) % args.finetune_std == 0:
             model.module.adaptive_std(len(data_loader_train))
         
     total_time = time.time() - start_time
