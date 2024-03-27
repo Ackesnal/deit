@@ -68,7 +68,7 @@ def standardization(W, dim_in, num_head, dim_head):
         
     mean = W.mean(dim=-1, keepdim=True)
     std = W.std(dim=-1, keepdim=True)
-    scale = torch.maximum(std*(dim_head**0.5), torch.ones(std.shape, device=std.device)*1e-4)
+    scale = torch.maximum(std, torch.ones(std.shape, device=std.device)*1e-4) #*(dim_head**0.5)
     W = (W - mean) / scale
     
     #W.register_hook(make_print_grad("W after standardization"))
@@ -280,7 +280,7 @@ class Mlp(nn.Module):
         return x
         
     def adaptive_std(self, steps):
-        self.feature_std.data = self.feature_std.data * 0.8 + (self.feature_std_accumulation/steps).data * 0.1
+        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
         print(self.feature_std.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
@@ -544,7 +544,6 @@ class Attention(nn.Module):
                 #print("Shortcut gain", self.shortcut_gain1.item(), self.shortcut_gain2.item(), self.shortcut_gain3.item())
                 #print("mhsa gammas:", self.gamma_q.data, self.gamma_k.data, self.gamma_v.data, self.gamma_proj.data)
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
-                #print("V:", v_bias)
                 #print("V:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
                 #print("V weight:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
                 #print("K weight:", self.k_weight.grad.mean(), self.k_weight.grad.max(), self.k_weight.grad.min())
@@ -553,7 +552,7 @@ class Attention(nn.Module):
             return x
     
     def adaptive_std(self, steps):
-        self.feature_std.data = self.feature_std.data * 0.8 + (self.feature_std_accumulation/steps).data * 0.1
+        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
         print(self.feature_std.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         

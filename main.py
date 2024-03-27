@@ -533,7 +533,7 @@ def main(args):
     if not args.resume:
         model.module.adaptive_std(1)
     else:
-        if args.start_epoch >= 100:
+        if args.start_epoch >= 50:
             for name, param in model.module.named_parameters():
                 if "gamma" in name:
                     param.requires_grad_(True)
@@ -541,7 +541,7 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         model.module.clean_std()
         
-        if epoch == 100:
+        if epoch == 50:
             for name, param in model.module.named_parameters():
                 if "gamma" in name:
                     param.requires_grad_(True)

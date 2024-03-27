@@ -293,7 +293,7 @@ class NativeScalerWithGradNormCount:
             
             self._scaler.step(optimizer)
             self._scaler.update()
-            
+        
             """
             for name, p in named_parameters:
                 if p.grad is not None:
