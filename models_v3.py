@@ -147,13 +147,9 @@ class Mlp(nn.Module):
         ############################ ↑↑↑ 2-layer MLP ↑↑↑ ###########################
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
-        """
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain)
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain)
-        """
+            self.shortcut_gain = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         ########################### ↓↓↓ Normalization ↓↓↓ ##########################
@@ -220,7 +216,10 @@ class Mlp(nn.Module):
         x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
                 
         # Add shortcut
-        x = x + shortcut
+        if self.shortcut_type == "PerLayer":
+            x = x + shortcut
+        elif self.shortcut_type == "PerOperation":
+            x = x * self.shortcut_gain + shortcut
                 
         # Activation
         x = self.act(x)
@@ -239,8 +238,8 @@ class Mlp(nn.Module):
         x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
         ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         #if x.get_device() == 0:
-            #print("x after ffn:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
             #print("x std:", self.feature_std.item())
+            #print("x after ffn:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
             #print("fc1_weight:", fc1_weight.norm().item())
             #print("weight 1:", fc1_weight.norm())
             #print("weight 2:", fc2_weight.norm())
@@ -249,7 +248,7 @@ class Mlp(nn.Module):
         return x
         
     def adaptive_std(self, steps):
-        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
+        self.feature_std.data = self.feature_std.data * 0.5 + (self.feature_std_accumulation/steps).data * 0.5
         print(self.feature_std.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
@@ -465,6 +464,7 @@ class Attention(nn.Module):
                 x = self.norm(x)
                 x = x.transpose(-1, -2)
             elif self.feature_norm == "None":
+                self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
                 x = x / self.feature_std
                 
             # Calculate Query (Q), Key (K) and Value (V)
@@ -488,7 +488,7 @@ class Attention(nn.Module):
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
             
-            x = x * self.shortcut_gain2 + shortcut # B, N, C
+            x = x * self.shortcut_gain2 + shortcut * (1-self.shortcut_gain2) # B, N, C
             
             # Shortcut
             shortcut = x
@@ -503,8 +503,8 @@ class Attention(nn.Module):
             x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
             ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
             #if x.get_device() == 0:
-                #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
                 #print("x std:", self.feature_std.item())
+                #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
                 #print("Shortcut gain", self.shortcut_gain1.item(), self.shortcut_gain2.item(), self.shortcut_gain3.item())
                 #print("mhsa gammas:", self.gamma_q.data, self.gamma_k.data, self.gamma_v.data, self.gamma_proj.data)
                 #print("q_weight:", q_weight.var(-1).mean(), q_weight.mean(), q_weight.max(), q_weight.min())
@@ -516,7 +516,7 @@ class Attention(nn.Module):
             return x
     
     def adaptive_std(self, steps):
-        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
+        self.feature_std.data = self.feature_std.data * 0.5 + (self.feature_std_accumulation/steps).data * 0.5
         print(self.feature_std.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         

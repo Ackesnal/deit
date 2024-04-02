@@ -360,7 +360,7 @@ def main(args):
             if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
                 print(f"Removing key {k} from pretrained checkpoint")
                 del checkpoint_model[k]
-
+        
         # interpolate position embedding
         pos_embed_checkpoint = checkpoint_model['pos_embed']
         embedding_size = pos_embed_checkpoint.shape[-1]
@@ -380,7 +380,7 @@ def main(args):
         pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
         new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
         checkpoint_model['pos_embed'] = new_pos_embed
-
+        
         model.load_state_dict(checkpoint_model, strict=False)
         
     if args.attn_only:
@@ -513,9 +513,42 @@ def main(args):
             checkpoint = torch.load(args.resume, map_location='cpu')
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+            args.start_epoch = checkpoint['epoch'] + 1
+            if args.weight_standardization and args.start_epoch >= args.finetune_gamma:
+                for name, param in model.module.named_parameters():
+                    if "gamma" in name:
+                        param.requires_grad_(True)
+                model_without_ddp = model.module
+                        
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                    
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                    optimizer,
+                    **scheduler_kwargs(args),
+                    updates_per_epoch=args.updates_per_epoch,
+                )
+                
+                lr_scheduler.step(args.start_epoch)
+            if args.shortcut_type == "PerOperation" and args.start_epoch >= args.finetune_gain:
+                for name, param in model.module.named_parameters():
+                    if "shortcut_gain" in name:
+                        param.requires_grad_(True)
+                model_without_ddp = model.module
+                            
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                        
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                    optimizer,
+                    **scheduler_kwargs(args),
+                    updates_per_epoch=args.updates_per_epoch,
+                )
+                    
+                lr_scheduler.step(args.start_epoch)
+            
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-            args.start_epoch = checkpoint['epoch'] + 1
             if args.model_ema:
                 utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
             if 'scaler' in checkpoint:
@@ -536,40 +569,6 @@ def main(args):
     if args.weight_standardization:
         if not args.resume:
             model.module.adaptive_std(1)
-        else:
-            if args.start_epoch >= args.finetune_gamma:
-                for name, param in model.module.named_parameters():
-                    if "gamma" in name:
-                        param.requires_grad_(True)
-                model_without_ddp = model.module
-                        
-                optimizer = create_optimizer(args, model_without_ddp)
-                loss_scaler = utils.NativeScalerWithGradNormCount()
-                    
-                lr_scheduler, num_epochs = create_scheduler_v2(
-                    optimizer,
-                    **scheduler_kwargs(args),
-                    updates_per_epoch=args.updates_per_epoch,
-                )
-                
-                lr_scheduler.step(args.start_epoch)
-    if args.shortcut_type == "PerOperation":
-        if args.start_epoch >= args.finetune_gain:
-            for name, param in model.module.named_parameters():
-                if "shortcut_gain" in name:
-                    param.requires_grad_(True)
-            model_without_ddp = model.module
-                        
-            optimizer = create_optimizer(args, model_without_ddp)
-            loss_scaler = utils.NativeScalerWithGradNormCount()
-                    
-            lr_scheduler, num_epochs = create_scheduler_v2(
-                optimizer,
-                **scheduler_kwargs(args),
-                updates_per_epoch=args.updates_per_epoch,
-            )
-                
-            lr_scheduler.step(args.start_epoch)
                     
     for epoch in range(args.start_epoch, args.epochs):
         if args.weight_standardization:
