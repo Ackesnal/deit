@@ -248,13 +248,13 @@ def unitwise_norm(x, norm_type=2.0):
     if x.ndim == 2:
         # Although the output dim is first in the weight tensor `(dim_out, dim_in)`, the norm
         # should be calculated along the `dim_out` dimension (i.e., dim 0)
-        return x.norm(norm_type, dim=0, keepdim=True)
+        return x.norm(norm_type, dim=1, keepdim=True)
     else:
         # For nn.ConvNd, output dim is first in the kernel/weight tensor
         return x.norm(norm_type, dim=tuple(range(1, x.ndim)), keepdim=True)
 
 
-def adaptive_clip_grad(parameters, clip_factor=0.01, eps=1e-3, norm_type=2.0):
+def adaptive_clip_grad(parameters, clip_factor=0.01, eps=1e-4, norm_type=2.0):
     if isinstance(parameters, torch.Tensor):
         parameters = [parameters]
     for p in parameters:
@@ -287,13 +287,13 @@ class NativeScalerWithGradNormCount:
                 assert parameters is not None
                 self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
                 if clip_mode == "agc":
-                    adaptive_clip_grad(parameters, clip_factor=clip_grad, eps=1e-3)
+                    adaptive_clip_grad(parameters, clip_factor=clip_grad)
                 else:
                     dispatch_clip_grad(parameters, clip_grad, mode=clip_mode)
             
             self._scaler.step(optimizer)
             self._scaler.update()
-        
+            
             """
             for name, p in named_parameters:
                 if p.grad is not None:

@@ -244,7 +244,7 @@ def get_args_parser():
     parser.add_argument('--finetune_gain', type=int, default=0)
     parser.add_argument('--finetune_gamma', type=int, default=0)
     parser.add_argument('--finetune_std', type=int, default=30)
-    parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU'])
+    parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU', 'SiLU'])
     parser.add_argument('--reparam', default=False, action='store_true')
     return parser
 
@@ -329,6 +329,8 @@ def main(args):
         act_layer=torch.nn.LeakyReLU
     elif args.activation=="Sigmoid":
         act_layer=torch.nn.Sigmoid
+    elif args.activation=="SiLU":
+        act_layer=torch.nn.SiLU
     
     print(f"Creating model: {args.model}")
     model = create_model(
@@ -545,7 +547,7 @@ def main(args):
                         **scheduler_kwargs(args),
                         updates_per_epoch=args.updates_per_epoch,
                     )
-                    lr_scheduler.step(epoch)
+                    lr_scheduler.step(args.start_epoch)
             if args.shortcut_type == "PerOperation" and args.start_epoch >= args.finetune_gain:
                 for name, param in model.module.named_parameters():
                     if "shortcut_gain" in name:
