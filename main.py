@@ -244,7 +244,7 @@ def get_args_parser():
     parser.add_argument('--finetune_gain', type=int, default=0)
     parser.add_argument('--finetune_gamma', type=int, default=0)
     parser.add_argument('--finetune_std', type=int, default=30)
-    parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU', 'SiLU'])
+    parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU', 'SiLU', 'Tanh'])
     parser.add_argument('--reparam', default=False, action='store_true')
     return parser
 
@@ -331,6 +331,8 @@ def main(args):
         act_layer=torch.nn.Sigmoid
     elif args.activation=="SiLU":
         act_layer=torch.nn.SiLU
+    elif args.activation=="Tanh":
+        act_layer=torch.nn.Tanh
     
     print(f"Creating model: {args.model}")
     model = create_model(

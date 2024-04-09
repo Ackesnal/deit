@@ -346,8 +346,8 @@ class Attention(nn.Module):
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
-            #self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain*0, requires_grad=False)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
@@ -375,22 +375,22 @@ class Attention(nn.Module):
             q_weight = standardization(self.q_weight, 
                                        dim_in=self.dim_in,
                                        num_head=self.num_head,
-                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_q) * 0.32
+                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_q) * 0.64
                                           
             k_weight = standardization(self.k_weight,
                                        dim_in=self.dim_in,
                                        num_head=self.num_head,
-                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_k) * 0.32
+                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_k) * 0.64
                                           
             v_weight = standardization(self.v_weight, 
                                        dim_in=self.dim_in,
                                        num_head=self.num_head,
-                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_v) * 0.32
+                                       dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_v) * 0.64
                                           
             proj_weight = standardization(self.proj_weight,
                                           dim_in=self.dim_in,
                                           num_head=self.num_head,
-                                          dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_proj) * 0.32
+                                          dim_head=self.dim_head) * nn.functional.sigmoid(self.gamma_proj) * 0.64
             
             q_bias = self.q_bias - self.q_bias.mean()
             k_bias = self.k_bias - self.k_bias.mean()
@@ -444,8 +444,11 @@ class Attention(nn.Module):
             # Output linear projection
             x = nn.functional.linear(x, proj_weight, proj_bias) # B, N, C 
                 
-            # Add DropPath and shortcut
-            x = self.drop_path(x, None) + shortcut if self.drop_path is not None else x + shortcut # B, N, C
+            # Add DropPath
+            x = self.drop_path(x, None) if self.drop_path is not None else x # B, N, C
+            
+            # Add shortcut
+            x = x + shortcut # B, N, C
                 
         elif self.shortcut_type == "PerOperation":
             # Shortcut
@@ -463,7 +466,7 @@ class Attention(nn.Module):
                 x = x / self.feature_std
             
             # Calculate Query (Q), Key (K) and Value (V)
-            q = nn.functional.linear(x, q_weight * self.qk_gamma, q_bias) # B, N, C
+            q = nn.functional.linear(x, q_weight, q_bias) # B, N, C * self.qk_gamma
             k = nn.functional.linear(x, k_weight, k_bias) # B, N, C
             v = nn.functional.linear(x, v_weight, v_bias) # B, N, C
             
@@ -482,22 +485,22 @@ class Attention(nn.Module):
             v_attn = rearrange(v_attn, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
             
             # 3. Calculate linear projection for attended Value (AXVO)
-            v_out = nn.functional.linear(v_attn, proj_weight * self.proj_gamma, proj_bias) # B, N, C
+            v_out = nn.functional.linear(v_attn, proj_weight, proj_bias) # B, N, C
             
             # 4. Calculate linear projection for Value (XVO)
-            x_out = nn.functional.linear(v, proj_weight * self.proj_gamma, proj_bias) # B, N, C
+            x_out = nn.functional.linear(v, proj_weight, proj_bias) # B, N, C
             
             # 5. Calculate output (0.1A+I)X(VO+I)=0.1AXVO+2XVO+0.05AX+X
-            x = v_out + \
-                x_out * 1 / self.shortcut_gain1 + \
-                x_attn * self.shortcut_gain1 + \
-                shortcut
+            if self.shortcut_gain2.abs() <= 1e-8:
+                x = v_out * self.shortcut_gain1 + x_out * self.shortcut_gain1 / (self.shortcut_gain2+1e-8) + x_attn * self.shortcut_gain2 
+            else:
+                x = v_out * self.shortcut_gain1 + x_out * self.shortcut_gain1 / self.shortcut_gain2 + x_attn * self.shortcut_gain2 
             
             # Add DropPath
-            x = self.drop_path(x, shortcut) if self.drop_path is not None else x
+            x = self.drop_path(x, None) if self.drop_path is not None else x
             
             # Add shortcut
-            #x = out #+ shortcut
+            x = x + shortcut
         ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
         
         
@@ -508,7 +511,7 @@ class Attention(nn.Module):
             #print("XVO after mhsa:", x_out.std(-1).mean().item(), x_out.mean().item(), x_out.max().item(), x_out.min().item())
             #print("AXVO after mhsa:", v_out.std(-1).mean().item(), v_out.mean().item(), v_out.max().item(), v_out.min().item())
             #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
-            #print("Shortcut gain", self.shortcut_gain1.item(), self.shortcut_gain2.item(), self.shortcut_gain3.item())
+            #print("Shortcut gain", self.shortcut_gain1.item())#, self.shortcut_gain2.item(), self.shortcut_gain3.item())
             #print("mhsa gammas:", self.gamma_q.data, self.gamma_k.data, self.gamma_v.data, self.gamma_proj.data)
             #print("mhsa gammas:", nn.functional.sigmoid(self.gamma_q) * 0.2, nn.functional.sigmoid(self.gamma_k) * 0.2, nn.functional.sigmoid(self.gamma_v) * 0.2, nn.functional.sigmoid(self.gamma_proj) * 0.2)
             #print("v_weight:", v_weight.var(-1).mean(), v_weight.mean(), v_weight.max(), v_weight.min())
