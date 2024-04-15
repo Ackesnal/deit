@@ -245,16 +245,13 @@ def init_distributed_mode(args):
 def unitwise_norm(x, norm_type=2.0):
     if x.ndim <= 1:
         return x.norm(norm_type)
-    if x.ndim == 2:
-        # Although the output dim is first in the weight tensor `(dim_out, dim_in)`, the norm
-        # should be calculated along the `dim_out` dimension (i.e., dim 0)
-        return x.norm(norm_type, dim=1, keepdim=True)
     else:
-        # For nn.ConvNd, output dim is first in the kernel/weight tensor
+        # works for nn.ConvNd and nn,Linear where output dim is first in the kernel/weight tensor
+        # might need special cases for other weights (possibly MHA) where this may not be true
         return x.norm(norm_type, dim=tuple(range(1, x.ndim)), keepdim=True)
 
 
-def adaptive_clip_grad(parameters, clip_factor=0.01, eps=1e-4, norm_type=2.0):
+def adaptive_clip_grad(parameters, clip_factor=0.01, eps=1e-3, norm_type=2.0):
     if isinstance(parameters, torch.Tensor):
         parameters = [parameters]
     for p in parameters:
@@ -296,10 +293,11 @@ class NativeScalerWithGradNormCount:
             
             """
             for name, p in named_parameters:
-                if p.grad is not None and "_weight" in name:
+                if p.grad is not None:# and "_weight" in name:
                     print(name, "  ", p.grad.mean().item(), "    ", p.grad.max().item(), "    ", p.grad.min().item(), "    ", p.norm().item(), "    ", p.grad.norm().item())
             print("\n\n\n\n")
             """
+            
             
     def state_dict(self):
         return self._scaler.state_dict()

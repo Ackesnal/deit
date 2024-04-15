@@ -566,6 +566,7 @@ def main(args):
                 )
                     
                 lr_scheduler.step(args.start_epoch)
+                
             
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
