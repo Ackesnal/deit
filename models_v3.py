@@ -139,7 +139,6 @@ class Mlp(nn.Module):
         
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
         self.shortcut_type = shortcut_type
-        
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
             self.shortcut_gain2 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
@@ -152,10 +151,12 @@ class Mlp(nn.Module):
         self.feature_norm = feature_norm
         if self.feature_norm == "LayerNorm":
             self.norm = nn.LayerNorm(dim_in, elementwise_affine=False)
+            self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
         elif self.feature_norm == "BatchNorm":
             self.norm = nn.BatchNorm1d(dim_in, affine=False)
         elif self.feature_norm == "None":
             self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
+            self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
         ########################### ↑↑↑ Normalization ↑↑↑ ##########################
         
         ######################### ↓↓↓ DropPath & Dropout ↓↓↓ #######################
@@ -167,16 +168,6 @@ class Mlp(nn.Module):
         B, N, C = x.shape
         ###################### ↓↓↓ Standardization ↓↓↓ ######################
         if self.weight_standardization:
-            """
-            fc1_weight = self.fc1_weight.reshape(self.dim_in, self.num_head, self.dim_hidden//self.num_head)
-            fc1_weight = fc1_weight - fc1_weight.mean(dim=-1, keepdim=True)
-            fc1_weight = fc1_weight.reshape(self.dim_in, self.dim_hidden).T
-            
-            fc2_weight = self.fc2_weight.reshape(self.dim_hidden, self.num_head, self.dim_out//self.num_head)
-            fc2_weight = fc2_weight - fc2_weight.mean(dim=-1, keepdim=True)
-            fc2_weight = fc2_weight.reshape(self.dim_hidden, self.dim_out).T
-            
-            """
             fc1_weight = standardization(self.fc1_weight, 
                                          dim_in = self.dim_in, 
                                          num_head = self.num_head, 
@@ -206,14 +197,15 @@ class Mlp(nn.Module):
         
         # Feature normalization
         if self.feature_norm == "LayerNorm":
+            self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
             x = self.norm(x)
         elif self.feature_norm == "BatchNorm":
             x = x.transpose(-1, -2)
             x = self.norm(x)
             x = x.transpose(-1, -2)
         else:
-            #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
-            x = x / self.feature_std
+            self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
+            x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
         
         # FFN in
         x = nn.functional.linear(x, fc1_weight, fc1_bias) # B, N, 4C
@@ -272,6 +264,7 @@ class Mlp(nn.Module):
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
     def clean_std(self):
+        #print("Empirical feature standard deviation:", self.feature_std_accumulation.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
     def reparam(self):
@@ -375,36 +368,35 @@ class Attention(nn.Module):
         ##################### ↓↓↓ Normalization ↓↓↓ ####################
         self.feature_norm = feature_norm
         if self.feature_norm == "LayerNorm":
-            self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+            if self.shortcut_type == "PerLayer":
+                self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+                self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
+            if self.shortcut_type == "PerOperation":
+                self.norm1 = nn.LayerNorm(dim, elementwise_affine=False)
+                self.norm2 = nn.LayerNorm(dim, elementwise_affine=False)
+                self.feature_std_accumulation1 = nn.Parameter(torch.zeros((197)), requires_grad=False)
+                self.feature_std_accumulation2 = nn.Parameter(torch.zeros((197)), requires_grad=False)
         elif self.feature_norm == "BatchNorm":
-            self.norm = nn.BatchNorm1d(dim, affine=False)
+            if self.shortcut_type == "PerLayer":
+                self.norm = nn.BatchNorm1d(dim, affine=False)
+            if self.shortcut_type == "PerOperation":
+                self.norm1 = nn.BatchNorm1d(dim, affine=False)
+                self.norm2 = nn.BatchNorm1d(dim, affine=False)
         elif self.feature_norm == "None":
-            self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
-            #self.feature_std_accumulation = nn.Parameter(torch.zeros((1)), requires_grad=False)
+            if self.shortcut_type == "PerLayer":
+                self.feature_std = nn.Parameter(torch.ones((197))*std, requires_grad=False)
+                self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
+            else:
+                self.feature_std1 = nn.Parameter(torch.ones((197))*std, requires_grad=False)
+                self.feature_std2 = nn.Parameter(torch.ones((197))*std, requires_grad=False)
+                self.feature_std_accumulation1 = nn.Parameter(torch.zeros((197)), requires_grad=False)
+                self.feature_std_accumulation2 = nn.Parameter(torch.zeros((197)), requires_grad=False)
         ##################### ↑↑↑ Normalization ↑↑↑ ####################
         
     def forward(self, x):
         B, N, C = x.shape
         ######################### ↓↓↓ Standardization ↓↓↓ #########################
         if self.weight_standardization:
-            """
-            q_weight = self.q_weight.reshape(self.dim_in, self.num_head, self.dim_head)
-            q_weight = q_weight - q_weight.mean(dim=-1, keepdim=True)
-            q_weight = q_weight.reshape(self.dim_in, self.num_head * self.dim_head).T
-            
-            k_weight = self.k_weight.reshape(self.dim_in, self.num_head, self.dim_head)
-            k_weight = k_weight - k_weight.mean(dim=-1, keepdim=True)
-            k_weight = k_weight.reshape(self.dim_in, self.num_head * self.dim_head).T
-            
-            v_weight = self.v_weight.reshape(self.dim_in, self.num_head, self.dim_head)
-            v_weight = v_weight - v_weight.mean(dim=-1, keepdim=True)
-            v_weight = v_weight.reshape(self.dim_in, self.num_head * self.dim_head).T
-            
-            proj_weight = self.proj_weight.reshape(self.dim_in, self.num_head, self.dim_head)
-            proj_weight = proj_weight - proj_weight.mean(dim=-1, keepdim=True)
-            proj_weight = proj_weight.reshape(self.dim_in, self.num_head * self.dim_head).T
-            
-            """
             q_weight = standardization(self.q_weight, 
                                        dim_in=self.dim_in,
                                        num_head=self.num_head,
@@ -449,14 +441,15 @@ class Attention(nn.Module):
                 
             # Feature normalization
             if self.feature_norm == "LayerNorm":
+                self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
                 x = self.norm(x)
             elif self.feature_norm == "BatchNorm":
                 x = x.transpose(-1, -2)
                 x = self.norm(x)
                 x = x.transpose(-1, -2)
             else:
-                #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
-                x = x / self.feature_std
+                self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
+                x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
                 
             # Calculate Query (Q), Key (K) and Value (V)
             q = nn.functional.linear(x, q_weight, q_bias) # B, N, C
@@ -492,14 +485,15 @@ class Attention(nn.Module):
                 
             # Feature normalization
             if self.feature_norm == "LayerNorm":
-                x = self.norm(x)
+                self.feature_std_accumulation1.data = self.feature_std_accumulation1.data + x.std(-1).mean(0)
+                x = self.norm1(x)
             elif self.feature_norm == "BatchNorm":
                 x = x.transpose(-1, -2)
-                x = self.norm(x)
+                x = self.norm1(x)
                 x = x.transpose(-1, -2)
             elif self.feature_norm == "None":
-                #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
-                x = x / self.feature_std
+                self.feature_std_accumulation1.data = self.feature_std_accumulation1.data + x.std(-1).mean(0)
+                x = x / self.feature_std1.unsqueeze(0).unsqueeze(-1)
             
             #### IMPLEMENTATION 1 ####
             # Calculate Query (Q), Key (K) and Value (V)
@@ -531,14 +525,15 @@ class Attention(nn.Module):
             
             # Feature normalization
             if self.feature_norm == "LayerNorm":
-                x = self.norm(x)
+                self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
+                x = self.norm2(x)
             elif self.feature_norm == "BatchNorm":
                 x = x.transpose(-1, -2)
-                x = self.norm(x)
+                x = self.norm2(x)
                 x = x.transpose(-1, -2)
             elif self.feature_norm == "None":
-                #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean().item()
-                x = x / self.feature_std
+                self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
+                x = x / self.feature_std2.unsqueeze(0).unsqueeze(-1)
             
             # Linear projection
             x = nn.functional.linear(x, proj_weight, proj_bias) # B, N, C
@@ -647,7 +642,15 @@ class Attention(nn.Module):
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
     def clean_std(self):
-        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        if self.shortcut_type == "PerLayer":
+            #print("Empirical feature standard deviation:", self.feature_std_accumulation.data)
+            self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        elif self.shortcut_type == "PerOperation":
+            #print("Empirical feature standard deviation:", 
+                  #self.feature_std_accumulation1.data,
+                  #self.feature_std_accumulation2.data)
+            self.feature_std_accumulation1.data = self.feature_std_accumulation1.data * 0
+            self.feature_std_accumulation2.data = self.feature_std_accumulation2.data * 0
         
     def reparam(self):
         if self.weight_standardization:
