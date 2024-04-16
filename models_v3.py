@@ -141,8 +141,8 @@ class Mlp(nn.Module):
         self.shortcut_type = shortcut_type
         
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
         elif self.shortcut_type == "PerLayer":
             self.shortcut_gain1 = 1
             self.shortcut_gain2 = 1
@@ -360,9 +360,9 @@ class Attention(nn.Module):
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain1 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
