@@ -296,7 +296,7 @@ class NativeScalerWithGradNormCount:
                 if p.grad is not None:# and "_weight" in name:
                     print(name, "  ", p.grad.mean().item(), "    ", p.grad.max().item(), "    ", p.grad.min().item(), "    ", p.norm().item(), "    ", p.grad.norm().item())
             print("\n\n\n\n")
-            """
+            """ 
             
             
     def state_dict(self):
