@@ -221,13 +221,13 @@ class Mlp(nn.Module):
         x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
         
         # Add shortcut to x
-        x = x * self.shortcut_gain1 + shortcut * (1-self.shortcut_gain1) # B, N, C
+        x = x * self.shortcut_gain1 + shortcut #* (1-torch.sigmoid(self.shortcut_gain1)) # B, N, C
         ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         
         
         ######################## ↓↓↓ Activation ↓↓↓ #########################
         # Activation
-        x = self.act(x) # * self.shortcut_gain2 + x # B, N, C
+        x = self.act(x) * self.shortcut_gain2 + x * (1-self.shortcut_gain2) # B, N, C
         
         """
         # If feature norm is `None`, i.e., weight standardization, 
@@ -507,7 +507,7 @@ class Attention(nn.Module):
             v = nn.functional.linear(x, v_weight, v_bias) # B, N, C
                 
             # Add shortcut to V
-            v = v * self.shortcut_gain1 + shortcut * (1-self.shortcut_gain1) # B, N, C
+            v = v * self.shortcut_gain1 + shortcut # * (1-torch.sigmoid(self.shortcut_gain1)) # B, N, C
             
             # Shortcut
             shortcut = v
@@ -528,6 +528,7 @@ class Attention(nn.Module):
             # Shortcut
             shortcut = x
             
+            """
             # Feature normalization
             if self.feature_norm == "LayerNorm":
                 #self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
@@ -539,12 +540,13 @@ class Attention(nn.Module):
             elif self.feature_norm == "None":
                 #self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
                 x = x / self.feature_std2.unsqueeze(0).unsqueeze(-1)
+            """
             
             # Linear projection
             x = nn.functional.linear(x, proj_weight, proj_bias) # B, N, C
             
             # Add shortcut to x
-            x = x * self.shortcut_gain3 + shortcut * (1-self.shortcut_gain3)  # B, N, C
+            x = x * self.shortcut_gain3 + shortcut #* (1-torch.sigmoid(self.shortcut_gain3))  # B, N, C
             
             # Add DropPath
             x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
