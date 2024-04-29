@@ -245,7 +245,7 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, clip_mode='norm', parameters=None, create_graph=False, update_grad=True):
+    def __call__(self, loss, optimizer, clip_grad=None, clip_mode='norm', parameters=None, named_parameters=None, create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
         if update_grad:
             if clip_grad is not None:
@@ -254,6 +254,13 @@ class NativeScalerWithGradNormCount:
                 dispatch_clip_grad(parameters, clip_grad, mode=clip_mode)
             self._scaler.step(optimizer)
             self._scaler.update()
+            
+            """
+            for name, p in named_parameters:
+                if p.grad is not None and ".weight" in name and "norm" not in name:
+                    print(name, "  ", p.grad.mean().item(), "    ", p.grad.max().item(), "    ", p.grad.min().item(), "    ", p.norm().item(), "    ", p.grad.norm().item())
+            print("\n\n\n\n")
+            """
 
     def state_dict(self):
         return self._scaler.state_dict()

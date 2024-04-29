@@ -404,9 +404,12 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
     if not args.unscale_lr:
-        args.lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
-        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 512.0
-        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 512.0
+        args.lr = args.lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.warmup_lr = args.warmup_lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.min_lr = args.min_lr * args.batch_size * utils.get_world_size() / 1024.0
+        args.step_on_epochs = False
+        args.sched_on_updates = True
+        args.updates_per_epoch = len(data_loader_train)
     # gradient accumulation also need to scale the learning rate
     if args.accumulation_steps > 1:
         args.lr = args.lr * args.accumulation_steps
