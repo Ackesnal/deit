@@ -130,7 +130,7 @@ class Mlp(nn.Module):
         
         # Weight standardization parameters
         if self.weight_standardization:
-            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*gamma*((dim_hidden/dim_in)**0.5), requires_grad=False)
+            self.gamma_fc1 = nn.Parameter(torch.ones((1, dim_in))*gamma, requires_grad=False)
             self.gamma_fc2 = nn.Parameter(torch.ones((1, dim_hidden))*gamma, requires_grad=False)
             
         # Activation, GELU by default
@@ -140,8 +140,8 @@ class Mlp(nn.Module):
         ########################## ↓↓↓ Shortcut scale ↓↓↓ ##########################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False) #
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False) #
+            self.shortcut_gain1 = nn.Parameter(torch.ones((197))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((197))*shortcut_gain, requires_grad=False)
         elif self.shortcut_type == "PerLayer":
             self.shortcut_gain1 = 1
             self.shortcut_gain2 = 1
@@ -221,13 +221,12 @@ class Mlp(nn.Module):
         x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
         
         # Add shortcut to x
-        x = x * self.shortcut_gain1 + shortcut #* (1-torch.sigmoid(self.shortcut_gain1)) # B, N, C
+        x = x * self.shortcut_gain1.unsqueeze(0).unsqueeze(-1) + shortcut # B, N, C
         ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
-        
         
         ######################## ↓↓↓ Activation ↓↓↓ #########################
         # Activation
-        x = self.act(x) * self.shortcut_gain2 + x * (1-self.shortcut_gain2) # B, N, C
+        x = self.act(x) * self.shortcut_gain2.unsqueeze(0).unsqueeze(-1) + x # * (1-self.shortcut_gain2) # B, N, C
         
         """
         # If feature norm is `None`, i.e., weight standardization, 
@@ -257,13 +256,9 @@ class Mlp(nn.Module):
         return x
         
     def adaptive_std(self, steps):
-        print(self.feature_std.data, self.feature_std_accumulation.data)
-        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
-        print(self.feature_std.data)
-        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        pass
         
     def clean_std(self):
-        #print("Empirical feature standard deviation:", self.feature_std_accumulation.data)
         self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
     def reparam(self):
@@ -315,7 +310,6 @@ class Attention(nn.Module):
         self.dim_head = dim // num_head
         self.dim_in = dim
         self.scale = qk_scale or self.dim_head ** -0.5 # scale
-        # self.scale = self.scale * std
         self.weight_standardization = weight_standardization
         
         #################### ↓↓↓ Self Attention ↓↓↓ ####################
@@ -352,9 +346,9 @@ class Attention(nn.Module):
         #################### ↓↓↓ Shortcut scale ↓↓↓ ####################
         self.shortcut_type = shortcut_type
         if self.shortcut_type == "PerOperation":
-            self.shortcut_gain1 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False) # 
-            self.shortcut_gain2 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1, 197, 1))*shortcut_gain, requires_grad=False) #  
+            self.shortcut_gain1 = nn.Parameter(torch.ones((197))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain2 = nn.Parameter(torch.ones((197))*shortcut_gain, requires_grad=False)
+            self.shortcut_gain3 = nn.Parameter(torch.ones((197))*shortcut_gain, requires_grad=False)
         #################### ↑↑↑ Shortcut scale ↑↑↑ ####################
         
         ################### ↓↓↓ DropPath & Dropout ↓↓↓ #################
@@ -367,29 +361,13 @@ class Attention(nn.Module):
         ##################### ↓↓↓ Normalization ↓↓↓ ####################
         self.feature_norm = feature_norm
         if self.feature_norm == "LayerNorm":
-            if self.shortcut_type == "PerLayer":
-                self.norm = nn.LayerNorm(dim, elementwise_affine=False)
-                self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
-            if self.shortcut_type == "PerOperation":
-                self.norm1 = nn.LayerNorm(dim, elementwise_affine=False)
-                self.norm2 = nn.LayerNorm(dim, elementwise_affine=False)
-                self.feature_std_accumulation1 = nn.Parameter(torch.zeros((197)), requires_grad=False)
-                self.feature_std_accumulation2 = nn.Parameter(torch.zeros((197)), requires_grad=False)
+            self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+            self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
         elif self.feature_norm == "BatchNorm":
-            if self.shortcut_type == "PerLayer":
-                self.norm = nn.BatchNorm1d(dim, affine=False)
-            if self.shortcut_type == "PerOperation":
-                self.norm1 = nn.BatchNorm1d(dim, affine=False)
-                self.norm2 = nn.BatchNorm1d(dim, affine=False)
+            self.norm = nn.BatchNorm1d(dim, affine=False)
         elif self.feature_norm == "None":
-            if self.shortcut_type == "PerLayer":
-                self.feature_std = nn.Parameter(torch.ones((197))*std, requires_grad=False)
-                self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
-            else:
-                self.feature_std1 = nn.Parameter(torch.ones((197))*std, requires_grad=False)
-                self.feature_std2 = nn.Parameter(torch.ones((197))*std, requires_grad=False)
-                self.feature_std_accumulation1 = nn.Parameter(torch.zeros((197)), requires_grad=False)
-                self.feature_std_accumulation2 = nn.Parameter(torch.zeros((197)), requires_grad=False)
+            self.feature_std = nn.Parameter(torch.ones((197))*std, requires_grad=False)
+            self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
         ##################### ↑↑↑ Normalization ↑↑↑ ####################
         
     def forward(self, x):
@@ -490,15 +468,15 @@ class Attention(nn.Module):
             
             # Feature normalization
             if self.feature_norm == "LayerNorm":
-                #self.feature_std_accumulation1.data = self.feature_std_accumulation1.data + x.std(-1).mean(0)
-                x = self.norm1(x)
+                #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
+                x = self.norm(x)
             elif self.feature_norm == "BatchNorm":
                 x = x.transpose(-1, -2)
-                x = self.norm1(x)
+                x = self.norm(x)
                 x = x.transpose(-1, -2)
             elif self.feature_norm == "None":
-                #self.feature_std_accumulation1.data = self.feature_std_accumulation1.data + x.std(-1).mean(0)
-                x = x / self.feature_std1.unsqueeze(0).unsqueeze(-1)
+                #self.feature_std_accumulation.data = self.feature_std_accumulation.data + x.std(-1).mean(0)
+                x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
             
             #### IMPLEMENTATION 1 ####
             # Calculate Query (Q), Key (K) and Value (V)
@@ -507,7 +485,7 @@ class Attention(nn.Module):
             v = nn.functional.linear(x, v_weight, v_bias) # B, N, C
                 
             # Add shortcut to V
-            v = v * self.shortcut_gain1 + shortcut # * (1-torch.sigmoid(self.shortcut_gain1)) # B, N, C
+            v = v * self.shortcut_gain1.unsqueeze(0).unsqueeze(-1) + shortcut # B, N, C
             
             # Shortcut
             shortcut = v
@@ -523,30 +501,16 @@ class Attention(nn.Module):
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
             
-            x = x * self.shortcut_gain2 + shortcut * (1-self.shortcut_gain2) # B, N, C
+            x = x * self.shortcut_gain2.unsqueeze(0).unsqueeze(-1) + shortcut # * (1-self.shortcut_gain2.unsqueeze(0).unsqueeze(-1)) # B, N, C
 
             # Shortcut
             shortcut = x
-            
-            """
-            # Feature normalization
-            if self.feature_norm == "LayerNorm":
-                #self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
-                x = self.norm2(x)
-            elif self.feature_norm == "BatchNorm":
-                x = x.transpose(-1, -2)
-                x = self.norm2(x)
-                x = x.transpose(-1, -2)
-            elif self.feature_norm == "None":
-                #self.feature_std_accumulation2.data = self.feature_std_accumulation2.data + x.std(-1).mean(0)
-                x = x / self.feature_std2.unsqueeze(0).unsqueeze(-1)
-            """
             
             # Linear projection
             x = nn.functional.linear(x, proj_weight, proj_bias) # B, N, C
             
             # Add shortcut to x
-            x = x * self.shortcut_gain3 + shortcut #* (1-torch.sigmoid(self.shortcut_gain3))  # B, N, C
+            x = x * self.shortcut_gain3.unsqueeze(0).unsqueeze(-1) + shortcut # B, N, C
             
             # Add DropPath
             x = self.drop_path(x, droppath_shortcut) if self.drop_path is not None else x
@@ -631,6 +595,7 @@ class Attention(nn.Module):
             #print("AXVO after mhsa:", v_out.std(-1).mean().item(), v_out.mean().item(), v_out.max().item(), v_out.min().item())
             #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
             #print("Shortcut gain", self.shortcut_gain1.data.mean(), self.shortcut_gain2.data.mean(), self.shortcut_gain3.data.mean())
+            #print("Shortcut gain", self.shortcut_gain1.data.max(), self.shortcut_gain2.data.max(), self.shortcut_gain3.data.max())
             #print("mhsa gammas:", self.gamma_q.data, self.gamma_k.data, self.gamma_v.data, self.gamma_proj.data)
             #print("mhsa gammas:", nn.functional.sigmoid(self.gamma_q) * 0.32, nn.functional.sigmoid(self.gamma_k) * 0.32, nn.functional.sigmoid(self.gamma_v) * 0.32, nn.functional.sigmoid(self.gamma_proj) * 0.32)
             #print("v_weight before:", self.v_weight.std(-1).mean(), self.v_weight.max(), self.v_weight.min())
@@ -641,21 +606,10 @@ class Attention(nn.Module):
         return x
     
     def adaptive_std(self, steps):
-        print(self.feature_std.data, self.feature_std_accumulation.data)
-        self.feature_std.data = self.feature_std.data * 0.7 + (self.feature_std_accumulation/steps).data * 0.3
-        print(self.feature_std.data)
-        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
+        pass
         
     def clean_std(self):
-        if self.shortcut_type == "PerLayer":
-            #print("Empirical feature standard deviation:", self.feature_std_accumulation.data)
-            self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
-        elif self.shortcut_type == "PerOperation":
-            #print("Empirical feature standard deviation:", 
-                  #self.feature_std_accumulation1.data,
-                  #self.feature_std_accumulation2.data)
-            self.feature_std_accumulation1.data = self.feature_std_accumulation1.data * 0
-            self.feature_std_accumulation2.data = self.feature_std_accumulation2.data * 0
+        self.feature_std_accumulation.data = self.feature_std_accumulation.data * 0
         
     def reparam(self):
         if self.weight_standardization:
@@ -978,20 +932,25 @@ class NFTransformer(VisionTransformer):
         return x
         
     def _init_standard_weights(self):
-        std = (8*12)**(-0.25)
         for name, param in self.named_parameters():
             if "blocks" in name:
+                layer = int(name.split(".")[1])
                 if "v_weight" in name or "proj_weight" in name or "fc1_weight" in name or "fc2_weight" in name:
-                    nn.init.trunc_normal_(param, mean=0.0, std=.02*std, a=-2, b=2)
+                    nn.init.trunc_normal_(param, mean=0.0, std=.02*(8*(layer+1))**(-0.25), a=-2, b=2)
                 elif "_weight" in name:
                     nn.init.trunc_normal_(param, mean=0.0, std=.02, a=-2, b=2)
                 elif "_bias" in name:
                     nn.init.zeros_(param)
             else:    
-                if "_weight" in name:
-                    nn.init.trunc_normal_(param, mean=0.0, std=.02, a=-1, b=1)
+                if "head_weight" in name:
+                    nn.init.trunc_normal_(param, mean=0.0, std=.02*(8*12)**(-0.25), a=-2, b=2)
+                elif "_weight" in name:
+                    nn.init.trunc_normal_(param, mean=0.0, std=.02, a=-2, b=2)
                 elif "_bias" in name:
                     nn.init.zeros_(param)
+        
+        if self.cls_token is not None:
+            nn.init.normal_(self.cls_token, std=1e-6)
                 
     def adaptive_std(self, steps):
         for blk in self.blocks:
