@@ -237,7 +237,7 @@ def get_args_parser():
     # NFViT Ablation Augments
     parser.add_argument('--shortcut_type', default='PerLayer', type=str, choices=['PerLayer', 'PerOperation'])
     parser.add_argument('--affected_layers', default='None', type=str, choices=['None', 'Both', 'MHSA', 'FFN'])
-    parser.add_argument('--feature_norm', default='LayerNorm', type=str, choices=['GroupedLayerNorm', 'LayerNorm', 'BatchNorm'])
+    parser.add_argument('--feature_norm', default='LayerNorm', type=str, choices=['GroupedLayerNorm', 'LayerNorm', 'BatchNorm', 'EmpiricalSTD', 'None'])
     parser.add_argument('--weight_standardization', default=False, action='store_true')
     parser.add_argument('--shortcut_gain', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.1)

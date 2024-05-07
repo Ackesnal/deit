@@ -55,7 +55,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
         if args.accumulation_steps >= 1:
-            loss_scaler(loss, optimizer, clip_grad=max_norm, clip_mode="agc",
+            loss_scaler(loss, optimizer, clip_grad=max_norm, #clip_mode="agc",
                         parameters=model.parameters(), create_graph=is_second_order, named_parameters=model.named_parameters(),
                         update_grad=(idx + 1) % args.accumulation_steps == 0)
         
