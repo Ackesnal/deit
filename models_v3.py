@@ -138,14 +138,14 @@ class Mlp(nn.Module):
         if self.shortcut_type == "PerOperation":
             self.shortcut_gain1 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
             self.shortcut_gain2 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
-            self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
+            #self.shortcut_gain3 = nn.Parameter(torch.ones((1))*shortcut_gain, requires_grad=False)
             
-            """
+            
             self.fc_out1_weight = nn.Parameter(torch.zeros((self.dim_out, self.dim_out)))
             self.fc_out1_bias = nn.Parameter(torch.zeros((self.dim_out)), requires_grad=bias)
             self.fc_out2_weight = nn.Parameter(torch.zeros((self.dim_out, self.dim_out)))
             self.fc_out2_bias = nn.Parameter(torch.zeros((self.dim_out)), requires_grad=bias)
-            """
+            
         ########################## ↑↑↑ Shortcut scale ↑↑↑ ##########################
         
         ########################### ↓↓↓ Normalization ↓↓↓ ##########################
@@ -159,7 +159,7 @@ class Mlp(nn.Module):
             self.feature_std2 = nn.Parameter(torch.ones((1))*std, requires_grad=False)
             self.feature_std_accumulation = nn.Parameter(torch.zeros((197)), requires_grad=False)
         elif self.feature_norm == "None":
-            self.feature_std = nn.Parameter(torch.ones((197))*10, requires_grad=False)
+            self.feature_std = nn.Parameter(torch.ones((1))*10, requires_grad=False)
         ########################### ↑↑↑ Normalization ↑↑↑ ##########################
         
         ######################### ↓↓↓ DropPath & Dropout ↓↓↓ #######################
@@ -197,14 +197,14 @@ class Mlp(nn.Module):
             fc2_weight = self.fc2_weight.T
             fc1_bias = self.fc1_bias
             fc2_bias = self.fc2_bias
+        
             
-            """
             if self.shortcut_type == "PerOperation":
                 fc_out1_weight = self.fc_out1_weight.T
                 fc_out1_bias = self.fc_out1_bias
                 fc_out2_weight = self.fc_out2_weight.T
                 fc_out2_bias = self.fc_out2_bias
-            """
+            
         ###################### ↑↑↑ Standardization ↑↑↑ ######################
             
         ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
@@ -234,14 +234,44 @@ class Mlp(nn.Module):
             x = x + shortcut
             
         elif self.shortcut_type == "PerOperation":
-        
+            """
+            # Shortcut
+            shortcut = x # B, N, C
+            x = self.act(x)
+            x = self.drop_path(x * self.shortcut_gain1, None) if self.drop_path is not None else x * self.shortcut_gain1
+            x = x + shortcut # B, N, C 
+                
+            # Shortcut
+            shortcut = x
+            
+            # Feature normalization
+            if self.feature_norm == "LayerNorm":
+                x = self.norm(x)
+            elif self.feature_norm == "BatchNorm":
+                x = x.transpose(-1, -2)
+                x = self.norm(x)
+                x = x.transpose(-1, -2)
+            elif self.feature_norm == "EmpiricalSTD":
+                x = x / self.feature_std1.unsqueeze(0).unsqueeze(-1)
+            else:
+                pass
+                
+            x = nn.functional.linear(x, fc1_weight, fc1_bias) # B, N, 4C
+            
+            x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, 4C
+            
+            x = self.drop_path(x * self.shortcut_gain2, None) if self.drop_path is not None else x * self.shortcut_gain2
+            
+            x = x + shortcut # B, N, C
+            
+            """
+            """
             # Shortcut
             shortcut = x # B, N, C
             x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
             x = self.act(x)
             x = self.drop_path(x * self.shortcut_gain1, None) if self.drop_path is not None else x * self.shortcut_gain1
-            x = x + shortcut # B, N, C
-                        
+            x = x + shortcut # B, N, C     
             # Shortcut
             shortcut = x.repeat(1,1,4) # B, N, C
             
@@ -281,9 +311,23 @@ class Mlp(nn.Module):
             x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, 4C
             x = self.drop_path(x * self.shortcut_gain3, None) if self.drop_path is not None else x * self.shortcut_gain3
             x = x + shortcut # B, N, C
-            
-                
             """
+            
+            # Shortcut
+            shortcut = x
+            
+            # Feature normalization
+            if self.feature_norm == "LayerNorm":
+                x = self.norm(x)
+            elif self.feature_norm == "BatchNorm":
+                x = x.transpose(-1, -2)
+                x = self.norm(x)
+                x = x.transpose(-1, -2)
+            elif self.feature_norm == "EmpiricalSTD":
+                x = x / self.feature_std1.unsqueeze(0).unsqueeze(-1)
+            else:
+                pass
+                
             # FFN in
             x = nn.functional.linear(x, fc1_weight, fc1_bias) # B, N, 4C
                     
@@ -324,7 +368,7 @@ class Mlp(nn.Module):
             # Add shortcut to x
             x = x + shortcut # B, N, C
             ######################## ↑↑↑ Activation ↑↑↑ #########################
-            """
+            
             
         ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         #if x.get_device() == 0:

@@ -573,27 +573,49 @@ def main(args):
                 for name, param in model.module.named_parameters():
                     if "gamma" in name:
                         param.requires_grad_(True)
+                        
+                model_without_ddp = model.module
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                            
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                            optimizer,
+                            **scheduler_kwargs(args),
+                            updates_per_epoch=args.updates_per_epoch,
+                )
+                lr_scheduler.step(epoch)
+                
             if args.feature_norm == "GroupedLayerNorm" and epoch == args.finetune_std:
                 for name, param in model.module.named_parameters():
                     if "feature_std" in name and "feature_std_" not in name:
                         param.requires_grad_(True)
+                        
+                model_without_ddp = model.module
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                            
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                            optimizer,
+                            **scheduler_kwargs(args),
+                            updates_per_epoch=args.updates_per_epoch,
+                )
+                lr_scheduler.step(epoch)
         if args.shortcut_type == "PerOperation":
             if epoch == args.finetune_gain:
                 for name, param in model.module.named_parameters():
                     if "shortcut_gain" in name:
                         param.requires_grad_(True)
                         
-        model_without_ddp = model.module
-                        
-        optimizer = create_optimizer(args, model_without_ddp)
-        loss_scaler = utils.NativeScalerWithGradNormCount()
-                    
-        lr_scheduler, num_epochs = create_scheduler_v2(
-                    optimizer,
-                    **scheduler_kwargs(args),
-                    updates_per_epoch=args.updates_per_epoch,
-        )
-        lr_scheduler.step(epoch)
+                model_without_ddp = model.module
+                optimizer = create_optimizer(args, model_without_ddp)
+                loss_scaler = utils.NativeScalerWithGradNormCount()
+                            
+                lr_scheduler, num_epochs = create_scheduler_v2(
+                            optimizer,
+                            **scheduler_kwargs(args),
+                            updates_per_epoch=args.updates_per_epoch,
+                )
+                lr_scheduler.step(epoch)
                 
                     
         if args.distributed:
