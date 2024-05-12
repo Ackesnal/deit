@@ -218,8 +218,10 @@ class Mlp(nn.Module):
                 x = x.transpose(-1, -2)
                 x = self.norm(x)
                 x = x.transpose(-1, -2)
-            else:
+            elif self.feature_norm == "EmpiricalSTD":
                 x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
+            else:
+                pass
             
             # FFN in
             x = nn.functional.linear(x, fc1_weight, fc1_bias) # B, N, 4C
@@ -549,8 +551,10 @@ class Attention(nn.Module):
                 x = x.transpose(-1, -2)
                 x = self.norm(x)
                 x = x.transpose(-1, -2)
-            else:
+            elif self.feature_norm == "EmpiricalSTD":
                 x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
+            else:
+                pass
                 
             # Calculate Query (Q), Key (K) and Value (V)
             q = nn.functional.linear(x, q_weight, q_bias) # B, N, C
@@ -882,6 +886,7 @@ class NFAttentionBlock(nn.Module):
         if not self.rep:
             x = self.attn(x)
             x = self.mlp(x)
+            #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
         else:
             x = self.attn(x)
         return x
@@ -1121,7 +1126,7 @@ def normalization_free_deit_small_patch16_224_layer12(pretrained=False, pretrain
     return model
     
 @register_model
-def normalization_free_deit_medium_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
+def normalization_free_deit_base_patch16_224_layer12(pretrained=False, pretrained_cfg=None, **kwargs):
     model = NFTransformer(patch_size=16, embed_dim=768, depth=12, pre_norm=True,
                           num_heads=12, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
