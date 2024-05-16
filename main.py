@@ -241,9 +241,9 @@ def get_args_parser():
     parser.add_argument('--weight_standardization', default=False, action='store_true')
     parser.add_argument('--shortcut_gain', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.1)
-    parser.add_argument('--finetune_gain', type=int, default=0)
-    parser.add_argument('--finetune_gamma', type=int, default=0)
-    parser.add_argument('--finetune_std', type=int, default=30)
+    parser.add_argument('--finetune_gain', type=int, default=300)
+    parser.add_argument('--finetune_gamma', type=int, default=300)
+    parser.add_argument('--finetune_std', type=int, default=300)
     parser.add_argument('--activation', default='GELU', type=str, choices=['ReLU', 'GELU', 'Sigmoid', 'LeakyReLU', 'SiLU', 'Tanh'])
     parser.add_argument('--reparam', default=False, action='store_true')
     return parser
@@ -563,11 +563,7 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     
-    #if args.weight_standardization and args.start_epoch == 0:
-        #model.module.adaptive_std(1)
-    
     for epoch in range(args.start_epoch, args.epochs):
-        model.module.clean_std()
         if args.weight_standardization:
             if epoch == args.finetune_gamma:
                 for name, param in model.module.named_parameters():
@@ -643,8 +639,20 @@ def main(args):
                     'scaler': loss_scaler.state_dict(),
                     'args': args,
                 }, checkpoint_path)
-             
-
+                
+            if epoch % 10 == 0 and epoch > 0:
+                checkpoint_paths = [output_dir / f'checkpoint{epoch}epoch.pth']
+                for checkpoint_path in checkpoint_paths:
+                    utils.save_on_master({
+                        'model': model_without_ddp.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'lr_scheduler': lr_scheduler.state_dict(),
+                        'epoch': epoch,
+                        'model_ema': get_state_dict(model_ema),
+                        'scaler': loss_scaler.state_dict(),
+                        'args': args,
+                    }, checkpoint_path)
+        
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         
