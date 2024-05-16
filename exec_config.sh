@@ -3,7 +3,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --job-name=train
 #SBATCH --partition=gpu
-#SBATCH --cpus-per-task=10
+#SBATCH --cpus-per-task=30
 #SBATCH --gres=gpu:tesla-smx2:2
 #SBATCH --mem-per-cpu=2G
 #SBATCH -o normalization_free_deit_small_patch16_224_layer12_BS1024_Both_BatchNorm_PerOperation_ShortcutGain1.0+FinetuneAfter0Epochs_lr5e-4_warmuplr1e-5_minlr1e-5_out.txt
