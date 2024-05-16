@@ -475,10 +475,7 @@ class Attention(nn.Module):
             v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                 
             # Calculate self-attention
-            attn = q @ k.transpose(-1, -2) * self.scale
-            attn = attn.softmax(-1)
-            x = attn @ v
-            # x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
+            x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
             
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
