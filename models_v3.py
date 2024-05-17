@@ -480,7 +480,6 @@ class Attention(nn.Module):
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
             
-            
             # Add DropPath and shortcut gain
             x = self.drop_path(x * self.shortcut_gain2) if self.drop_path is not None else x * self.shortcut_gain2 # B, N, C
             
@@ -508,9 +507,8 @@ class Attention(nn.Module):
             x = x + shortcut # B, N, C
         ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
         #if x.get_device() == 0:
-            #print("x std:", self.std.mean())
             #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
-            #print("Shortcut gain", self.shortcut_gain1.data.mean(), self.shortcut_gain2.data.mean(), self.shortcut_gain3.data.mean())
+            #print("Shortcut gain", self.shortcut_gain1.data.item(), self.shortcut_gain2.data.item(), self.shortcut_gain3.data.item())
         return x
         
     def reparam(self):
@@ -804,6 +802,7 @@ class NFTransformer(VisionTransformer):
                     nn.init.trunc_normal_(param, mean=0.0, std=.02, a=-2, b=2)
                     #param.data.mul_(math.pow(12, -0.5))
                     #param.data.div_(max(math.pow(12, 0.5), 1))
+                    param.data.mul_(0.67*math.pow(12, -0.25))
                     #param.data.div_(max(math.pow(8.0*(layer+1), 0.25), 1))
                     #if "v_weight" in name or "proj_weight" in name or "fc1_weight" in name or "fc2_weight" in name:
                     #    param.data.mul_(0.67*math.pow(12, -0.25))
