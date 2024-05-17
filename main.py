@@ -252,7 +252,7 @@ def get_args_parser():
 
 
 def main(args):
-    if 'SLURM_PROCID' in os.environ:
+    if 'SLURM_PROCID' in os.environ and int(os.environ['SLURM_NNODES']) > 1:
         os.environ['WORLD_SIZE'] = str(int(os.environ['SLURM_NNODES']) * int(os.environ['SLURM_NTASKS_PER_NODE']))
     
     utils.init_distributed_mode(args)
