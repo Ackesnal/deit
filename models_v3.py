@@ -802,7 +802,7 @@ class NFTransformer(VisionTransformer):
                     nn.init.trunc_normal_(param, mean=0.0, std=.02, a=-2, b=2)
                     #param.data.mul_(math.pow(12, -0.5))
                     #param.data.div_(max(math.pow(12, 0.5), 1))
-                    param.data.mul_(0.67*math.pow(12, -0.25))
+                    #param.data.mul_(0.67*math.pow(12, -0.25))
                     #param.data.div_(max(math.pow(8.0*(layer+1), 0.25), 1))
                     #if "v_weight" in name or "proj_weight" in name or "fc1_weight" in name or "fc2_weight" in name:
                     #    param.data.mul_(0.67*math.pow(12, -0.25))
