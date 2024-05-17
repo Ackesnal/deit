@@ -29,6 +29,7 @@ import models_v2
 import models_v3
 
 import utils
+import os
 from ptflops import get_model_complexity_info
 
 
@@ -251,13 +252,16 @@ def get_args_parser():
 
 
 def main(args):
+    if 'SLURM_PROCID' in os.environ:
+        os.environ['WORLD_SIZE'] = str(int(os.environ['SLURM_NNODES']) * int(os.environ['SLURM_NTASKS_PER_NODE']))
+    
     utils.init_distributed_mode(args)
 
     print(args)
 
     if args.distillation_type != 'none' and args.finetune and not args.eval:
         raise NotImplementedError("Finetuning with distillation not yet supported")
-
+    
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
