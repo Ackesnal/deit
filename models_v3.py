@@ -771,7 +771,7 @@ class NFTransformer(VisionTransformer):
             self.norm_pre = nn.LayerNorm(embed_dim) if pre_norm else nn.Identity()
             self.norm = nn.LayerNorm(embed_dim) if not fc_norm else nn.Identity()
         elif self.feature_norm == "BatchNorm":
-            self.norm_pre = nn.BatchNorm1d(embed_dim) if pre_norm else nn.Identity()
+            self.norm_pre = nn.LayerNorm(embed_dim) if pre_norm else nn.Identity()
             self.norm = nn.BatchNorm1d(embed_dim) if not fc_norm else nn.Identity()
         elif self.feature_norm == "GroupedLayerNorm":
             self.norm_pre = nn.LayerNorm(self.dim_head, elementwise_affine=False) if pre_norm else nn.Identity()
