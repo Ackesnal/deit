@@ -15,6 +15,8 @@ from timm.utils import accuracy, ModelEma
 from losses import DistillationLoss
 import utils
 
+def check_nan(tensor):
+    return torch.isnan(tensor).float().sum().item() > 0
 
 def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -54,12 +56,20 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             loss = loss / args.accumulation_steps
         
         loss_value = loss.item()
-
+        """
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
             nan_loss_flag = True
             break
             #sys.exit(1)
+        """
+            
+        loss_is_nan = torch.tensor(check_nan(loss)).to(args.rank)
+        torch.distributed.all_reduce(loss_is_nan, op=torch.distributed.ReduceOp.SUM)
+        if loss_is_nan.item() > 0: 
+            print("Loss is nan, stopping training and reloading")
+            nan_loss_flag = True
+            break
         
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
