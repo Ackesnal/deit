@@ -228,7 +228,7 @@ class Mlp(nn.Module):
             
             if self.feature_norm == "BatchNorm":
                 x = self.norm2(x.transpose(-1,-2)).transpose(-1, -2)
-            
+
             # FFN out
             x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
             
