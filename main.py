@@ -673,6 +673,8 @@ def main(args):
                 if 'scaler' in checkpoint:
                     loss_scaler.load_state_dict(checkpoint['scaler'])
             lr_scheduler.step(args.start_epoch)
+            
+            print("Stop torch.cuda.amp.autocast in the current epoch")
             use_amp = False
             
             continue
