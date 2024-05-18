@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:tesla-smx2:1
 #SBATCH --mem-per-cpu=2G
 #SBATCH -o normalization_free_deit_small_patch16_224_layer12_BS1024_Both_Full+BatchNorm+BNFFN_PerOperation_ShortcutGain1.0+FinetuneAfter200Epochs_lr1e-3_warmuplr1e-6+warmup20epochs_minlr1e-5_out.txt
-#SBATCH -e nnormalization_free_deit_small_patch16_224_layer12_BS1024_Both_Full+BatchNorm+BNFFN_PerOperation_ShortcutGain1.0+FinetuneAfter200Epochs_lr1e-3_warmuplr1e-6+warmup20epochs_minlr1e-5_err.txt
+#SBATCH -e normalization_free_deit_small_patch16_224_layer12_BS1024_Both_Full+BatchNorm+BNFFN_PerOperation_ShortcutGain1.0+FinetuneAfter200Epochs_lr1e-3_warmuplr1e-6+warmup20epochs_minlr1e-5_err.txt
 
 
 

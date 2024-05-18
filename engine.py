@@ -8,6 +8,7 @@ import sys
 from typing import Iterable, Optional
 
 import torch
+import os
 
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
@@ -63,8 +64,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             break
             #sys.exit(1)
         """
-            
-        loss_is_nan = torch.tensor(check_nan(loss)).to(args.rank)
+        
+        loss_is_nan = torch.tensor(check_nan(loss)).to(args.gpu)
         torch.distributed.all_reduce(loss_is_nan, op=torch.distributed.ReduceOp.SUM)
         if loss_is_nan.item() > 0: 
             print("Loss is nan, stopping training and reloading")
