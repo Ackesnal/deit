@@ -144,7 +144,8 @@ class Mlp(nn.Module):
         if self.feature_norm == "LayerNorm":
             self.norm = nn.LayerNorm(dim_in, elementwise_affine=True)
         elif self.feature_norm == "BatchNorm":
-            self.norm = nn.BatchNorm1d(dim_in, affine=True)
+            self.norm1 = nn.BatchNorm1d(dim_in, affine=True)
+            self.norm2 = nn.BatchNorm1d(dim_hidden, affine=True)
         elif self.feature_norm == "EmpiricalSTD":
             self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
         ########################### ↑↑↑ Normalization ↑↑↑ ##########################
@@ -211,7 +212,7 @@ class Mlp(nn.Module):
             if self.feature_norm == "LayerNorm":
                 x = self.norm(x)
             elif self.feature_norm == "BatchNorm":
-                x = self.norm(x.transpose(-1,-2)).transpose(-1, -2)
+                x = self.norm1(x.transpose(-1,-2)).transpose(-1, -2)
             elif self.feature_norm == "EmpiricalSTD":
                 x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
             else:
@@ -225,6 +226,9 @@ class Mlp(nn.Module):
             mask[:, :, :C] = True
             x = torch.where(mask, self.act(x), x)
             
+            if self.feature_norm == "BatchNorm":
+                x = self.norm2(x.transpose(-1,-2)).transpose(-1, -2)
+                
             # FFN out
             x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
             
