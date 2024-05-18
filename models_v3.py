@@ -144,7 +144,8 @@ class Mlp(nn.Module):
         if self.feature_norm == "LayerNorm":
             self.norm = nn.LayerNorm(dim_in, elementwise_affine=True)
         elif self.feature_norm == "BatchNorm":
-            self.norm = nn.BatchNorm1d(dim_in, affine=True)
+            self.norm1 = nn.BatchNorm1d(dim_in, affine=True)
+            self.norm2 = nn.BatchNorm1d(dim_hidden, affine=True)
         elif self.feature_norm == "EmpiricalSTD":
             self.feature_std = nn.Parameter(torch.ones((1))*std, requires_grad=False)
         ########################### ↑↑↑ Normalization ↑↑↑ ##########################
@@ -211,7 +212,7 @@ class Mlp(nn.Module):
             if self.feature_norm == "LayerNorm":
                 x = self.norm(x)
             elif self.feature_norm == "BatchNorm":
-                x = self.norm(x.transpose(-1,-2)).transpose(-1, -2)
+                x = self.norm1(x.transpose(-1,-2)).transpose(-1, -2)
             elif self.feature_norm == "EmpiricalSTD":
                 x = x / self.feature_std.unsqueeze(0).unsqueeze(-1)
             else:
@@ -224,6 +225,9 @@ class Mlp(nn.Module):
             mask = torch.zeros_like(x, dtype=torch.bool)
             mask[:, :, :C] = True
             x = torch.where(mask, self.act(x), x)
+            
+            if self.feature_norm == "BatchNorm":
+                x = self.norm2(x.transpose(-1,-2)).transpose(-1, -2)
             
             # FFN out
             x = nn.functional.linear(x, fc2_weight, fc2_bias) # B, N, C
@@ -763,14 +767,38 @@ class NFTransformer(VisionTransformer):
         self.head_bias = nn.Parameter(torch.zeros((num_classes)))
         ############################ ↑↑↑ Output Head ↑↑↑ ###########################
         
+        if self.feature_norm in ["LayerNorm", "EmpiricalSTD"]:
+            self.norm_pre = nn.LayerNorm(embed_dim) if pre_norm else nn.Identity()
+            self.norm = nn.LayerNorm(embed_dim) if not fc_norm else nn.Identity()
+        elif self.feature_norm == "BatchNorm":
+            self.norm_pre = nn.BatchNorm1d(embed_dim) if pre_norm else nn.Identity()
+            self.norm = nn.BatchNorm1d(embed_dim) if not fc_norm else nn.Identity()
+        elif self.feature_norm == "GroupedLayerNorm":
+            self.norm_pre = nn.LayerNorm(self.dim_head, elementwise_affine=False) if pre_norm else nn.Identity()
+            self.norm = nn.LayerNorm(embed_dim) if not fc_norm else nn.Identity()
+        elif self.feature_norm == "None":
+            self.norm_pre = nn.LayerNorm(embed_dim) if pre_norm else nn.Identity()
+            self.norm = nn.Identity()
+        else:
+            assert False, "Feature normalization type not supported"
+        
         self._init_standard_weights()
             
     def forward_features(self, x):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         B, N, C = x.shape
+        
         if self.pre_norm:
-            x = self.norm_pre(x)
+            if self.feature_norm in ["LayerNorm", "EmpiricalSTD", "None"]:
+                x = self.norm_pre(x)
+            elif self.feature_norm == "BatchNorm":
+                x = self.norm_pre(x.transpose(-1, -2)).transpose(-1, -2)
+            elif self.feature_norm == "GroupedLayerNorm":
+                x = self.norm_pre(x.reshape(B, N, self.num_head, self.dim_head)).reshape(B, N, C)
+            else:
+                pass
+        
         
         for i, blk in enumerate(self.blocks):
             if self.training and self.checkpointing:
@@ -778,7 +806,12 @@ class NFTransformer(VisionTransformer):
             else:
                 x = blk(x)
         
-        x = self.norm(x)
+        if self.feature_norm == "BatchNorm":
+            x = self.norm(x.transpose(-1, -2)).transpose(-1, -2)
+        elif self.feature_norm in ["LayerNorm", "GroupedLayerNorm", "EmpiricalSTD", "None"]:
+            x = self.norm(x)
+        else:
+            pass
         return x
     
     def forward_head(self, x, pre_logits: bool = False):
