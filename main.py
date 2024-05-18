@@ -567,6 +567,7 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     
+    use_amp=True
     for epoch in range(args.start_epoch, args.epochs):
         if args.weight_standardization:
             if epoch == args.finetune_gamma:
@@ -627,6 +628,7 @@ def main(args):
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
             lr_scheduler = lr_scheduler,
+            use_amp = use_amp,
             args = args
         )
         
@@ -637,7 +639,7 @@ def main(args):
             model_without_ddp.load_state_dict(checkpoint['model'])
             
             if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-                args.start_epoch = checkpoint['epoch'] + 1
+                args.start_epoch = checkpoint['epoch']
                 if args.weight_standardization:
                     if args.start_epoch >= args.finetune_gamma:
                         for name, param in model.module.named_parameters():
@@ -671,8 +673,11 @@ def main(args):
                 if 'scaler' in checkpoint:
                     loss_scaler.load_state_dict(checkpoint['scaler'])
             lr_scheduler.step(args.start_epoch)
+            use_amp = False
             
             continue
+        else:
+            use_amp = True
   
         # lr_scheduler.step(epoch)
         if args.output_dir:
@@ -731,8 +736,6 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
         
-        #if args.weight_standardization and epoch % args.finetune_std == 0:
-            #model.module.adaptive_std(len(data_loader_train))
         
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
