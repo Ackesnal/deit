@@ -790,15 +790,7 @@ class NFTransformer(VisionTransformer):
         B, N, C = x.shape
         
         if self.pre_norm:
-            if self.feature_norm in ["LayerNorm", "EmpiricalSTD", "None"]:
-                x = self.norm_pre(x)
-            elif self.feature_norm == "BatchNorm":
-                x = self.norm_pre(x.transpose(-1, -2)).transpose(-1, -2)
-            elif self.feature_norm == "GroupedLayerNorm":
-                x = self.norm_pre(x.reshape(B, N, self.num_head, self.dim_head)).reshape(B, N, C)
-            else:
-                pass
-        
+            x = self.norm_pre(x)
         
         for i, blk in enumerate(self.blocks):
             if self.training and self.checkpointing:
