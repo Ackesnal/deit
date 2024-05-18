@@ -569,152 +569,108 @@ def main(args):
     
     use_amp=True
     for epoch in range(args.start_epoch, args.epochs):
-        if args.weight_standardization:
-            if epoch == args.finetune_gamma:
-                for name, param in model.module.named_parameters():
-                    if "gamma" in name:
-                        param.requires_grad_(True)
-                        
-                model_without_ddp = model.module
-                optimizer = create_optimizer(args, model_without_ddp)
-                loss_scaler = utils.NativeScalerWithGradNormCount()
+        while True:
+            if args.weight_standardization:
+                if epoch == args.finetune_gamma:
+                    for name, param in model.module.named_parameters():
+                        if "gamma" in name:
+                            param.requires_grad_(True)
                             
-                lr_scheduler, num_epochs = create_scheduler_v2(
-                            optimizer,
-                            **scheduler_kwargs(args),
-                            updates_per_epoch=args.updates_per_epoch,
-                )
-                lr_scheduler.step(epoch)
-                
-            if args.feature_norm == "GroupedLayerNorm" and epoch == args.finetune_std:
-                for name, param in model.module.named_parameters():
-                    if "feature_std" in name and "feature_std_" not in name:
-                        param.requires_grad_(True)
-                        
-                model_without_ddp = model.module
-                optimizer = create_optimizer(args, model_without_ddp)
-                loss_scaler = utils.NativeScalerWithGradNormCount()
-                            
-                lr_scheduler, num_epochs = create_scheduler_v2(
-                            optimizer,
-                            **scheduler_kwargs(args),
-                            updates_per_epoch=args.updates_per_epoch,
-                )
-                lr_scheduler.step(epoch)
-        if args.shortcut_type == "PerOperation":
-            if epoch == args.finetune_gain:
-                for name, param in model.module.named_parameters():
-                    if "shortcut_gain" in name:
-                        param.requires_grad_(True)
-                        
-                model_without_ddp = model.module
-                optimizer = create_optimizer(args, model_without_ddp)
-                loss_scaler = utils.NativeScalerWithGradNormCount()
-                            
-                lr_scheduler, num_epochs = create_scheduler_v2(
-                            optimizer,
-                            **scheduler_kwargs(args),
-                            updates_per_epoch=args.updates_per_epoch,
-                )
-                lr_scheduler.step(epoch)
-                
+                    model_without_ddp = model.module
+                    optimizer = create_optimizer(args, model_without_ddp)
+                    loss_scaler = utils.NativeScalerWithGradNormCount()
+                                
+                    lr_scheduler, num_epochs = create_scheduler_v2(
+                                optimizer,
+                                **scheduler_kwargs(args),
+                                updates_per_epoch=args.updates_per_epoch,
+                    )
+                    lr_scheduler.step(epoch)
                     
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        
-        train_stats, nan_loss_flag = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, model_ema, mixup_fn,
-            set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
-            lr_scheduler = lr_scheduler,
-            use_amp = use_amp,
-            args = args
-        )
-        
-        if nan_loss_flag:
-            print("Reload the last epoch's checkpoint.")
-            checkpoint_path = output_dir/'checkpoint.pth'
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
-            model_without_ddp.load_state_dict(checkpoint['model'])
-            
-            if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-                args.start_epoch = checkpoint['epoch']
-                if args.weight_standardization:
-                    if args.start_epoch >= args.finetune_gamma:
-                        for name, param in model.module.named_parameters():
-                            if "gamma" in name:
-                                param.requires_grad_(True)
-                    if args.feature_norm == "GroupedLayerNorm" and args.start_epoch >= args.finetune_std: 
-                        for name, param in model.module.named_parameters():
-                            if "feature_std" in name and "feature_std_" not in name:
-                                param.requires_grad_(True)
-                if args.shortcut_type == "PerOperation" and args.start_epoch >= args.finetune_gain:
+                if args.feature_norm == "GroupedLayerNorm" and epoch == args.finetune_std:
+                    for name, param in model.module.named_parameters():
+                        if "feature_std" in name and "feature_std_" not in name:
+                            param.requires_grad_(True)
+                            
+                    model_without_ddp = model.module
+                    optimizer = create_optimizer(args, model_without_ddp)
+                    loss_scaler = utils.NativeScalerWithGradNormCount()
+                                
+                    lr_scheduler, num_epochs = create_scheduler_v2(
+                                optimizer,
+                                **scheduler_kwargs(args),
+                                updates_per_epoch=args.updates_per_epoch,
+                    )
+                    lr_scheduler.step(epoch)
+            if args.shortcut_type == "PerOperation":
+                if epoch == args.finetune_gain:
                     for name, param in model.module.named_parameters():
                         if "shortcut_gain" in name:
                             param.requires_grad_(True)
                             
-                model_without_ddp = model.module
+                    model_without_ddp = model.module
+                    optimizer = create_optimizer(args, model_without_ddp)
+                    loss_scaler = utils.NativeScalerWithGradNormCount()
                                 
-                optimizer = create_optimizer(args, model_without_ddp)
-                loss_scaler = utils.NativeScalerWithGradNormCount()
-                            
-                lr_scheduler, num_epochs = create_scheduler_v2(
-                        optimizer,
-                        **scheduler_kwargs(args),
-                        updates_per_epoch=args.updates_per_epoch,
-                )
+                    lr_scheduler, num_epochs = create_scheduler_v2(
+                                optimizer,
+                                **scheduler_kwargs(args),
+                                updates_per_epoch=args.updates_per_epoch,
+                    )
+                    lr_scheduler.step(epoch)
+                    
+                        
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
+            
+            train_stats, nan_loss_flag = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                args.clip_grad, model_ema, mixup_fn,
+                set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
+                lr_scheduler = lr_scheduler,
+                use_amp = use_amp,
+                args = args
+            )
+            
+            if nan_loss_flag:
+                print("Reload the last epoch's checkpoint.")
+                checkpoint_path = output_dir/'checkpoint.pth'
+                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+                model_without_ddp.load_state_dict(checkpoint['model'])
+                
+                if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+                    args.start_epoch = checkpoint['epoch']
+                    model_without_ddp = model.module
+                                    
+                    optimizer = create_optimizer(args, model_without_ddp)
+                    loss_scaler = utils.NativeScalerWithGradNormCount()
+                                
+                    lr_scheduler, num_epochs = create_scheduler_v2(
+                            optimizer,
+                            **scheduler_kwargs(args),
+                            updates_per_epoch=args.updates_per_epoch,
+                    )
+                    lr_scheduler.step(args.start_epoch)
+                    
+                    optimizer.load_state_dict(checkpoint['optimizer'])
+                    lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                    if args.model_ema:
+                        utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
+                    if 'scaler' in checkpoint:
+                        loss_scaler.load_state_dict(checkpoint['scaler'])
                 lr_scheduler.step(args.start_epoch)
                 
-                optimizer.load_state_dict(checkpoint['optimizer'])
-                lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-                if args.model_ema:
-                    utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
-                if 'scaler' in checkpoint:
-                    loss_scaler.load_state_dict(checkpoint['scaler'])
-            lr_scheduler.step(args.start_epoch)
-            
-            print("Stop torch.cuda.amp.autocast in the current epoch")
-            use_amp = False
-            
-            continue
-        else:
-            use_amp = True
-  
-        # lr_scheduler.step(epoch)
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'model_ema': get_state_dict(model_ema),
-                    'scaler': loss_scaler.state_dict(),
-                    'args': args,
-                }, checkpoint_path)
+                print("Stop torch.cuda.amp.autocast in the current epoch")
+                use_amp = False
                 
-            if epoch % 10 == 0 and epoch > 0:
-                checkpoint_paths = [output_dir / f'checkpoint{epoch}epoch.pth']
-                for checkpoint_path in checkpoint_paths:
-                    utils.save_on_master({
-                        'model': model_without_ddp.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch,
-                        'model_ema': get_state_dict(model_ema),
-                        'scaler': loss_scaler.state_dict(),
-                        'args': args,
-                    }, checkpoint_path)
-        
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        
-        if max_accuracy < test_stats["acc1"]:
-            max_accuracy = test_stats["acc1"]
+                continue
+            else:
+                use_amp = True
+      
+            # lr_scheduler.step(epoch)
             if args.output_dir:
-                checkpoint_paths = [output_dir / 'best_checkpoint.pth']
+                checkpoint_paths = [output_dir / 'checkpoint.pth']
                 for checkpoint_path in checkpoint_paths:
                     utils.save_on_master({
                         'model': model_without_ddp.state_dict(),
@@ -725,18 +681,51 @@ def main(args):
                         'scaler': loss_scaler.state_dict(),
                         'args': args,
                     }, checkpoint_path)
+                    
+                if epoch % 10 == 0 and epoch > 0:
+                    checkpoint_paths = [output_dir / f'checkpoint{epoch}epoch.pth']
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'model_ema': get_state_dict(model_ema),
+                            'scaler': loss_scaler.state_dict(),
+                            'args': args,
+                        }, checkpoint_path)
             
-        print(f'Max accuracy: {max_accuracy:.2f}%')
-
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
-        
-        
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            test_stats = evaluate(data_loader_val, model, device)
+            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            
+            if max_accuracy < test_stats["acc1"]:
+                max_accuracy = test_stats["acc1"]
+                if args.output_dir:
+                    checkpoint_paths = [output_dir / 'best_checkpoint.pth']
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'model_ema': get_state_dict(model_ema),
+                            'scaler': loss_scaler.state_dict(),
+                            'args': args,
+                        }, checkpoint_path)
+                
+            print(f'Max accuracy: {max_accuracy:.2f}%')
+    
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                         **{f'test_{k}': v for k, v in test_stats.items()},
+                         'epoch': epoch,
+                         'n_parameters': n_parameters}
+            
+            
+            if args.output_dir and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+            
+            break
         
         
     total_time = time.time() - start_time
