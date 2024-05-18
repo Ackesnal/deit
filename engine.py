@@ -64,7 +64,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             break
             #sys.exit(1)
         """
-        
         loss_is_nan = torch.tensor(check_nan(loss)).to(args.gpu)
         torch.distributed.all_reduce(loss_is_nan, op=torch.distributed.ReduceOp.SUM)
         if loss_is_nan.item() > 0: 
