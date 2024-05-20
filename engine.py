@@ -34,7 +34,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     idx = 0
     len_data_loader = len(data_loader)
     
-    nan_loss_flag = False
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     
         samples = samples.to(device, non_blocking=True)
@@ -68,8 +67,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         torch.distributed.all_reduce(loss_is_nan, op=torch.distributed.ReduceOp.SUM)
         if loss_is_nan.item() > 0: 
             print("Loss is nan, stopping training and reloading")
-            nan_loss_flag = True
-            break
+            return None, True
         
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
@@ -94,7 +92,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, nan_loss_flag
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, False
 
 
 @torch.no_grad()
