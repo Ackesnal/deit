@@ -115,10 +115,11 @@ class Mlp(nn.Module):
         ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
         #if x.get_device() == 0:
             #print("x after ffn:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
-            #print("Shortcut gain", self.shortcut_gain.data.item())
+            #print("Shortcut gain", self.gain.data.item())
         return x
         
     def reparam(self):
+        
         return
         
         
@@ -307,7 +308,7 @@ class Attention(nn.Module):
         ######################### ↑↑↑ Self-attention ↑↑↑ ##########################
         #if x.get_device() == 0:
             #print("x after mhsa:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
-            #print("Shortcut gain", self.shortcut_gain1.data.item(), self.shortcut_gain2.data.item(), self.shortcut_gain3.data.item())
+            #print("Shortcut gain", self.gain1.data.item(), self.gain2.data.item(), self.gain3.data.item())
         return x
         
     def reparam(self):
@@ -357,9 +358,7 @@ class RepAttention(nn.Module):
 
 
 class RepMlp(nn.Module):
-    def __init__(self, 
-                 dim
-                 ):
+    def __init__(self, weights, biases):
         super().__init__()
         
         # Hyperparameters
@@ -367,6 +366,13 @@ class RepMlp(nn.Module):
         self.ffn2 = nn.Linear(dim, dim)
         self.ffn3 = nn.Linear(dim, dim)
         self.act = nn.GELU()
+        
+        self.ffn1.weight.data = weights[0]
+        self.ffn1.bias.data = biases[0]
+        self.ffn2.weight.data = weights[0]
+        self.ffn2.bias.data = biases[0]
+        self.ffn3.weight.data = weights[0]
+        self.ffn3.bias.data = biases[0]
 
         
     def forward(self, x):
@@ -408,6 +414,9 @@ class NFAttentionBlock(nn.Module):
         return x
     
     def reparam(self):
+        weights, biases = self.mlp.reparam()
+        del self.mlp
+        self.mlp = RepMlp(weights, biases)
         return
         """
         if self.affected_layers == "FFN":
@@ -534,7 +543,7 @@ class NFTransformer(VisionTransformer):
             
         
 @register_model
-def normalization_free_deit_tiny_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+def RePaViT_tiny_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = NFTransformer(patch_size=16, embed_dim=192, depth=12, pre_norm=True,
                           num_heads=3, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
@@ -543,14 +552,14 @@ def normalization_free_deit_tiny_patch16_224_layer12(pretrained=False, pretraine
     
     
 @register_model
-def normalization_free_deit_small_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+def RePaViT_small_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = NFTransformer(patch_size=16, embed_dim=384, depth=12, pre_norm=True,
                           num_heads=6, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
     
 @register_model
-def normalization_free_deit_base_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+def RePaViT_base_patch16_224_layer12(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = NFTransformer(patch_size=16, embed_dim=768, depth=12, pre_norm=True,
                           num_heads=12, mlp_ratio=4, qkv_bias=True, fc_norm=False,
                           norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
