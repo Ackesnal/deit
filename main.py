@@ -30,8 +30,10 @@ import models_v3
 
 import utils
 import os
+import random
 from ptflops import get_model_complexity_info
 
+import wandb
 
 
 def get_macs(model, x=None):
@@ -540,6 +542,36 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     
+    
+    if args.rank == 0:
+        name = args.model.split("_")[0] + "_" + args.model.split("_")[1] + "_"
+        if args.channel_idle:
+            name = name + "ChannelIdle" + "_"
+        if args.po_shortcut:
+            name = name + "POShortcut" + "_"
+        name = name + "Gain" + str(args.shortcut_gain) + "_"
+        name = name + str(random.randint(0, 100000000))
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project=args.model.split("_")[0] + "_" + args.model.split("_")[1],
+            name=name,
+            # track hyperparameters and run metadata
+            config={
+            "model": args.model,
+            "layer": "FFN" if args.channel_idle and not args.po_shortcut else "MHSA" if not args.channel_idle and args.po_shortcut else "Both" if args.channel_idle and args.po_shortcut else "None",
+            "shortcut_gain": args.shortcut_gain,
+            "norm_type": args.feature_norm,
+            "lr": args.lr,
+            "min-lr": args.min_lr,
+            "warmup-lr": args.warmup_lr,
+            "warmup-epoch": args.warmup_epochs,
+            "opt": args.opt,
+            "weight-decay": args.weight_decay,
+            "epochs": args.epochs,
+            }
+        
+        )
+    
     use_amp=True
     for epoch in range(args.start_epoch, args.epochs):
         while True:
@@ -585,7 +617,7 @@ def main(args):
                 set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
                 lr_scheduler = lr_scheduler,
                 use_amp = use_amp,
-                args = args
+                args = args,
             )
             
             if nan_loss_flag:
@@ -651,6 +683,7 @@ def main(args):
             test_stats = evaluate(data_loader_val, model, device)
             print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             
+            
             if max_accuracy < test_stats["acc1"]:
                 max_accuracy = test_stats["acc1"]
                 if args.output_dir:
@@ -672,14 +705,17 @@ def main(args):
                          **{f'test_{k}': v for k, v in test_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
-            
-            
+                    
+            if args.rank == 0:
+                wandb.log({"acc1": test_stats["acc1"]})
+                
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
             
             break
-        
+    
+    wandb.finish()
         
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

@@ -16,6 +16,8 @@ from timm.utils import accuracy, ModelEma
 from losses import DistillationLoss
 import utils
 
+import wandb
+
 def check_nan(tensor):
     return torch.isnan(tensor).float().sum().item() > 0
 
@@ -58,7 +60,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             loss = criterion(samples, outputs, targets)
             loss = loss / args.accumulation_steps
         
-        loss_value = loss.item()
+        loss_value = loss.item() * args.accumulation_steps
         """
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
@@ -83,6 +85,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             optimizer.zero_grad()
             lr_scheduler.step_update((epoch*len(data_loader)+idx) // args.accumulation_steps)
         
+        
         idx = idx + 1
 
         torch.cuda.synchronize()
@@ -91,11 +94,17 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             model_ema.update(model)
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        
+        # WANDB LOGGING
+        if args.rank == 0:
+            wandb.log({"loss": loss_value})
     
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, loss_nan_flag
+    
+    
 
 
 @torch.no_grad()
