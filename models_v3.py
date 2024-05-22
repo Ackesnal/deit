@@ -425,6 +425,9 @@ class Attention(nn.Module):
             v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                 
             # Calculate self-attention
+            #attn = q @ k.transpose(-1, -2) * self.scale
+            #attn = attn.softmax(-1)
+            #x = attn @ v
             x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
                 
             # Reshape x back to input shape
@@ -479,7 +482,10 @@ class Attention(nn.Module):
             v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
                 
             # Calculate self-attention
-            x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
+            attn = q @ k.transpose(-1, -2) * self.scale
+            attn = attn.softmax(-1)
+            x = attn @ v
+            #x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
             
             # Reshape x back to input shape
             x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
@@ -552,12 +558,12 @@ class RepAttention(nn.Module):
     def __init__(self, 
                  dim, 
                  num_head,
-                 q_weight,
-                 k_weight,
-                 v_weight,
-                 q_bias,
-                 k_bias,
-                 v_bias
+                 q_weight=None,
+                 k_weight=None,
+                 v_weight=None,
+                 q_bias=None,
+                 k_bias=None,
+                 v_bias=None
                  ):
         super().__init__()
         
@@ -567,35 +573,45 @@ class RepAttention(nn.Module):
         self.dim = dim
         self.scale = self.dim_head ** -0.5 # scale
         
-        self.q_weight = nn.Parameter(q_weight)
-        self.k_weight = nn.Parameter(k_weight)
-        self.v_weight = nn.Parameter(v_weight)
-        self.q_bias = nn.Parameter(q_bias)
-        self.k_bias = nn.Parameter(k_bias)
-        self.v_bias = nn.Parameter(v_bias)
+        self.qkv = nn.Linear(dim, dim*3)
+        #self.ffn1 = nn.Linear(dim, dim)
+        #self.ffn2 = nn.Linear(dim, dim)
+        #self.ffn3 = nn.Linear(dim, dim)
+        #self.act = nn.GELU()
+        self.out = nn.Linear(dim, dim)
+        self.norm = nn.LayerNorm(dim)
         
     def forward(self, x):
         B, N, C = x.shape
-            
-        # Calculate Query (Q), Key (K) and Value (V)
-        q = nn.functional.linear(x, self.q_weight, self.q_bias) # B, N, C
-        k = nn.functional.linear(x, self.k_weight, self.k_bias) # B, N, C
-        v = nn.functional.linear(x, self.v_weight, self.v_bias) # B, N, C
-                
-        # Reshape Query (Q), Key (K) and Value (V)
-        q = rearrange(q, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-        k = rearrange(k, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-        v = rearrange(v, 'b n (nh hc) -> b nh n hc', nh=self.num_head) # B, nh, N, C//nh
-                
+        shortcut = x
+        x = self.norm(x)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_head, self.dim_head).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
         # Calculate self-attention
         x = nn.functional.scaled_dot_product_attention(q, k, v) # B, nh, N, C//nh
+        x = rearrange(x, 'b nh n hc -> b n (nh hc)') # B, N, C
         
-        x = rearrange(x, 'b nh n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+        # x = self.ffn3(self.act(self.ffn2(x))) + self.ffn1(x)
+        return self.out(x) + shortcut
+
+
+class RepMlp(nn.Module):
+    def __init__(self, 
+                 dim
+                 ):
+        super().__init__()
         
-        x = nn.functional.gelu(x)
+        # Hyperparameters
+        self.ffn1 = nn.Linear(dim, dim)
+        self.ffn2 = nn.Linear(dim, dim)
+        self.ffn3 = nn.Linear(dim, dim)
+        self.act = nn.GELU()
+
         
+    def forward(self, x):
+        x = self.ffn3(self.act(self.ffn2(x))) + self.ffn1(x)
         return x
-                    
         
 
 class NFAttentionBlock(nn.Module):
@@ -610,6 +626,7 @@ class NFAttentionBlock(nn.Module):
         self.rep = False
         self.dim = dim
         self.num_head = num_head
+        self.affected_layers = affected_layers
         
         if feature_norm == "GroupedLayerNorm":
             feature_norm = "None"
@@ -661,14 +678,25 @@ class NFAttentionBlock(nn.Module):
         self.mlp.clean_std()
     
     def reparam(self):
-        q_weight, k_weight, v_weight, q_bias, k_bias, v_bias = self.attn.reparam()
-        ffn_weight, ffn_bias = self.mlp.reparam()
-        v_weight = ffn_weight @ v_weight
-        v_bias = nn.functional.linear(v_bias.unsqueeze(0), ffn_weight, ffn_bias).squeeze()
+        if self.affected_layers == "FFN":
+            self.mlp = RepMlp(self.dim)
+            self.attn = RepAttention(self.dim, self.num_head, None, None, None, None, None, None) #q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+            return
+        elif self.affected_layers == "MHSA":
+            self.attn = RepAttention(self.dim, self.num_head, None, None, None, None, None, None) #q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+            return
+        elif self.affected_layers == "Both":
+            self.attn = RepAttention(self.dim, self.num_head, None, None, None, None, None, None) #q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+            return
+            
+        #q_weight, k_weight, v_weight, q_bias, k_bias, v_bias = self.attn.reparam()
+        #ffn_weight, ffn_bias = self.mlp.reparam()
+        #v_weight = ffn_weight @ v_weight
+        #v_bias = nn.functional.linear(v_bias.unsqueeze(0), ffn_weight, ffn_bias).squeeze()
         self.rep = True
         del self.attn
         del self.mlp
-        self.attn = RepAttention(self.dim, self.num_head, q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+        self.attn = RepAttention(self.dim, self.num_head, None, None, None, None, None, None) #q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
 
 
 

@@ -51,8 +51,9 @@ def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
     model.eval()
 
     start = time.time()
-    for i in range(ntest):
-        model(x, **kwargs)
+    with torch.no_grad():
+        for i in range(ntest):
+            model(x, **kwargs)
     torch.cuda.synchronize()
     end = time.time()
 
