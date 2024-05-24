@@ -227,6 +227,7 @@ def main(config=None):
         args.warmup_epochs = config["warmup_epochs"]
         args.weight_decay = config["weight_decay"]
         args.shortcut_gain = config["shortcut_gain"]
+        args.drop_path = config["drop_path"]
         args.batch_size = config["batch_size"] // args.world_size
         args.unscale_lr = True
         torch.distributed.broadcast_object_list([config], src=0)
@@ -241,6 +242,7 @@ def main(config=None):
         args.warmup_epochs = config["warmup_epochs"]
         args.weight_decay = config["weight_decay"]
         args.shortcut_gain = config["shortcut_gain"]
+        args.drop_path = config["drop_path"]
         args.batch_size = config["batch_size"] // args.world_size
         args.unscale_lr = True
     
@@ -575,6 +577,7 @@ if __name__ == '__main__':
             'min_lr': {'min': 5e-7, 'max': 1e-4, 'distribution': 'uniform'},
             'warmup_epochs': {'min': 5, 'max': 20, 'distribution': 'q_uniform', 'q': 5},
             'weight_decay': {'min': -6.90775, 'max': -2.30258, 'distribution': 'log_uniform'},
+            'drop_path': {'min': 1e-2, 'max': 1e-1, 'distribution': 'uniform'},
             'shortcut_gain': {'min': -2.30258, 'max': 0.13976, 'distribution': 'q_log_uniform', 'q': 0.1}
         },
         "early_terminate": {
