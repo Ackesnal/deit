@@ -16,8 +16,6 @@ from timm.utils import accuracy, ModelEma
 from losses import DistillationLoss
 import utils
 
-import wandb
-
 def check_nan(tensor):
     return torch.isnan(tensor).float().sum().item() > 0
 
@@ -94,10 +92,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             model_ema.update(model)
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        
-        # WANDB LOGGING
-        if args.rank == 0:
-            wandb.log({"loss": loss_value})
     
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

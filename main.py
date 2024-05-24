@@ -237,6 +237,9 @@ def get_args_parser():
     parser.add_argument('--only_test_speed', action='store_true')     
     
     parser.add_argument('--signal_test', action='store_true')
+    parser.add_argument('--use_wandb', default=False, action='store_true')
+    parser.add_argument('--wandb_no_loss', default=False, action='store_true')
+    parser.add_argument('--wandb_suffix', default="", type=str)
     
     # NFViT Ablation Augments
     parser.add_argument('--shortcut_type', default='PerLayer', type=str, choices=['PerLayer', 'PerOperation'])
@@ -543,7 +546,7 @@ def main(args):
     max_accuracy = 0.0
     
     
-    if args.rank == 0:
+    if args.rank == 0 and args.use_wandb:
         name = args.model.split("_")[0] + "_" + args.model.split("_")[1] + "_"
         if args.channel_idle:
             name = name + "ChannelIdle" + "_"
@@ -553,7 +556,7 @@ def main(args):
         name = name + str(random.randint(0, 100000000))
         wandb.init(
             # set the wandb project where this run will be logged
-            project=args.model.split("_")[0] + "_" + args.model.split("_")[1],
+            project=args.model.split("_")[0] + "_" + args.model.split("_")[1] + args.wandb_suffix,
             name=name,
             # track hyperparameters and run metadata
             config={
@@ -568,9 +571,12 @@ def main(args):
             "opt": args.opt,
             "weight-decay": args.weight_decay,
             "epochs": args.epochs,
-            }
-        
+            }, 
+            mode=os.environ['WANDB_MODE']
         )
+        # If called by wandb.agent, as below,
+        # this config will be set by Sweep Controller
+        config = wandb.config
     
     use_amp=True
     for epoch in range(args.start_epoch, args.epochs):
@@ -652,8 +658,7 @@ def main(args):
                 use_amp = False
                 
                 continue
-      
-            
+                
             if args.output_dir:
                 checkpoint_paths = [output_dir / 'checkpoint.pth']
                 for checkpoint_path in checkpoint_paths:
@@ -706,8 +711,8 @@ def main(args):
                          'epoch': epoch,
                          'n_parameters': n_parameters}
                     
-            if args.rank == 0:
-                wandb.log({"acc1": test_stats["acc1"]})
+            if args.rank == 0 and args.use_wandb:
+                wandb.log({"accuracy": test_stats["acc1"], "loss": train_stats["loss"], "epoch": epoch})
                 
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
@@ -715,7 +720,8 @@ def main(args):
             
             break
     
-    wandb.finish()
+    if args.rank == 0 and args.use_wandb:
+        wandb.finish()
         
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

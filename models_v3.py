@@ -90,6 +90,7 @@ class Mlp(nn.Module):
         
         # Activation
         if self.channel_idle:
+            print("idle")
             mask = torch.zeros_like(x, dtype=torch.bool)
             mask[:, :, :C] = True
             x = torch.where(mask, self.act(x), x)
