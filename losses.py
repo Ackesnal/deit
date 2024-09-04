@@ -69,3 +69,34 @@ class DistillationLoss(torch.nn.Module):
 
         loss = base_loss * (1 - self.alpha) + distillation_loss * self.alpha
         return loss
+
+
+class OrthogonalLoss(torch.nn.Module):
+    """
+    This module wraps a standard criterion and adds an extra knowledge distillation loss by
+    taking a teacher model prediction and using it as additional supervision.
+    """
+    def __init__(self, base_criterion, alpha):
+        super().__init__()
+        self.base_criterion = base_criterion
+        self.alpha = alpha
+
+    def forward(self, inputs, outputs, labels):
+        """
+        Args:
+            inputs: The original inputs that are feed to the teacher model
+            outputs: the outputs of the model to be trained. It is expected to be
+                either a Tensor, or a Tuple[Tensor, Tensor], with the original output
+                in the first position and the distillation predictions as the second output
+            labels: the labels for the base criterion
+        """
+        
+        outputs, output_tokens = outputs
+        base_loss = self.base_criterion(outputs, labels)
+        
+        output_tokens = output_tokens / output_tokens.norm(dim=-1, keepdim=True)
+        cosine_sim = output_tokens @ output_tokens.transpose(-1,-2)
+        cosine_sim = cosine_sim.mean((-1,-2)).mean()
+
+        loss = base_loss * (1 - self.alpha) + cosine_sim * self.alpha
+        return loss

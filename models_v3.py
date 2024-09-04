@@ -74,14 +74,14 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-        
+        """
         if self.sparsity < 1:
             attn_rank, _ = torch.sort(attn.reshape(B, self.num_heads, -1), dim=-1, descending=True) # B, H, N*N
             attn_threshold = attn_rank[:, :, int(N*N*sparsity)] # B, H, N, N
             attn_threshold = attn_threshold.reshape(B, self.num_heads, 1, 1).expand(B, self.num_heads, N, N) # B, H, N, N
             pad = torch.zeros((B, self.num_heads, N, N), device = attn.device) # B, H, N, N
             attn = torch.where(attn>=attn_threshold, attn, pad) # B, H, N, N
-         
+        """ 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -111,6 +111,7 @@ class GraphPropagationBlock(nn.Module):
         x = x + self.drop_path(self.ls1(tmp))
         x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x, attn
+
 
 
 
@@ -148,6 +149,7 @@ class GraphPropagationTransformer(VisionTransformer):
             initial=False,
             jumping=False,
             combine="",
+            diverse=False,
             pretrained_cfg_overlay=None):
         
         super().__init__(
@@ -190,6 +192,12 @@ class GraphPropagationTransformer(VisionTransformer):
         self.initial = initial
         self.jumping = jumping
         self.combine = combine
+        self.diverse = diverse
+        if self.combine == "attention":
+            self.out_attn_1 = nn.Linear(embed_dim, embed_dim/2)
+            self.out_act_1 = nn.GELU()
+            self.out_attn_2 = nn.Linear(embed_dim/2, embed_dim)
+            self.out_act_2 = nn.GELU()
     
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -201,6 +209,7 @@ class GraphPropagationTransformer(VisionTransformer):
         if self.jumping:
             x_skip = []
         
+<<<<<<< HEAD
         attn_prev = None
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for i, blk in enumerate(self.blocks):
@@ -230,7 +239,45 @@ class GraphPropagationTransformer(VisionTransformer):
         if self.jumping:
             if self.combine == "max":
                 x = torch.stack(x_skips, dim=-1) # B, N, C, L
+=======
+        if self.initial:
+            if self.grad_checkpointing and not torch.jit.is_scripting():
+                for i, blk in enumerate(self.blocks):
+                    """type 1"""
+                    x = checkpoint.checkpoint(blk, x)
+                    x = x * 0.8 + x_init * 0.2
+                    """type 2"""
+                    # x = checkpoint.checkpoint(blk, x, x_init)
+                    if self.jumping:
+                        x_skip.append(x)
+            else:
+                for i, blk in enumerate(self.blocks):
+                    """type 1"""
+                    x = blk(x)
+                    x = x * 0.8 + x_init * 0.2
+                    """type 2"""
+                    # x = blk(x, x_init)
+                    if self.jumping:
+                        x_skip.append(x)
+        else:
+            if self.grad_checkpointing and not torch.jit.is_scripting():
+                for i, blk in enumerate(self.blocks):
+                    x = checkpoint.checkpoint(blk, x)
+                    if self.jumping:
+                        x_skip.append(x)
+            else:
+                for i, blk in enumerate(self.blocks):
+                    x = blk(x)
+                    if self.jumping:
+                        x_skip.append(x)
+                    
+        if self.jumping:
+            if self.combine == "max":
+                x = torch.stack(x_skip, dim=-1) # B, N, C, L
+>>>>>>> 3558448f4a787a33f89e1051e8b8a137d7241b1e
                 x = torch.max(x, dim=-1)[0] # B, N, C, L
+            if self.combine == "attention":
+                pass
         
         x = self.norm(x)
         return x
@@ -243,8 +290,13 @@ class GraphPropagationTransformer(VisionTransformer):
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.forward_head(x)
-        return x
+        if self.diverse and self.training:
+            tokens = x[:,1:,:]
+            x = self.forward_head(x)
+            return x, tokens
+        else:
+            x = self.forward_head(x)
+            return x
         
         
         

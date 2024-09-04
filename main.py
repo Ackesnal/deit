@@ -19,7 +19,7 @@ from timm.utils import NativeScaler, get_state_dict, ModelEma
 
 from datasets import build_dataset
 from engine import train_one_epoch, evaluate
-from losses import DistillationLoss
+from losses import DistillationLoss, OrthogonalLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
 
@@ -214,7 +214,9 @@ def get_args_parser():
     parser.add_argument('--sparsity', type=float, default=1)
     parser.add_argument('--initial', default=False, action='store_true')
     parser.add_argument('--jumping', default=False, action='store_true')
-    parser.add_argument('--combine', default="max", choices=["max", "", ""])
+    parser.add_argument('--combine', default="none", choices=["none", "max", "attention", ""])
+    parser.add_argument('--diverse', default=False, action='store_true')
+    
     
     parser.add_argument('--test_speed', action='store_true')
     parser.add_argument('--only_test_speed', action='store_true')     
@@ -306,7 +308,8 @@ def main(args):
         sparsity=args.sparsity,
         initial=args.initial,
         jumping=args.jumping,
-        combine=args.combine
+        combine=args.combine,
+        diverse=args.diverse
     )
     
     if args.finetune:
@@ -457,9 +460,12 @@ def main(args):
 
     # wrap the criterion in our custom DistillationLoss, which
     # just dispatches to the original criterion if args.distillation_type is 'none'
-    criterion = DistillationLoss(
-        criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
-    )
+    if args.diverse:
+        criterion = OrthogonalLoss(criterion, args.distillation_alpha)
+    else:
+        criterion = DistillationLoss(
+            criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
+        )
 
     output_dir = Path(args.output_dir)
     if args.resume:
